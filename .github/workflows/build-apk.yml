@@ -36,7 +36,7 @@ jobs:
       - name: Build release APK
         working-directory: flutter_app
         env:
-          KEYSTORE_PATH: android/ai-friend-release.keystore
+          KEYSTORE_PATH: ../ai-friend-release.keystore
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
