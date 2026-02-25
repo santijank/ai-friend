@@ -41,3 +41,9 @@ jobs:
           name: ai-friend-release
           path: flutter_app/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 30
+
+      - name: Send APK to Telegram
+        run: |
+          curl -F document=@flutter_app/build/app/outputs/flutter-apk/app-release.apk \
+               -F caption="AI Friend v1.0 — Build #${{ github.run_number }} (${{ github.sha }})" \
+               https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendDocument?chat_id=${{ secrets.TELEGRAM_CHAT_ID }}
