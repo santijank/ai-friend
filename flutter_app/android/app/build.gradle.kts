@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -6,9 +9,9 @@ plugins {
 
 // Load key.properties if exists (for local release builds)
 val keyPropertiesFile = rootProject.file("key.properties")
-val keyProperties = java.util.Properties()
+val keyProperties = Properties()
 if (keyPropertiesFile.exists()) {
-    keyProperties.load(java.io.FileInputStream(keyPropertiesFile))
+    keyProperties.load(FileInputStream(keyPropertiesFile))
 }
 
 android {
@@ -22,7 +25,7 @@ android {
     }
 
     kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17.toString()
+        jvmTarget = "17"
     }
 
     defaultConfig {
