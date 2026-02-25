@@ -28,7 +28,6 @@ flutter_app/android/app/debug/
 flutter_app/android/app/profile/
 flutter_app/android/app/release/
 *.jks
-flutter_app/android/key.properties
 
 # ===== IDE =====
 .idea/

@@ -31,11 +31,6 @@ jobs:
 
       - name: Build release APK
         working-directory: flutter_app
-        env:
-          KEYSTORE_PATH: ../ai-friend-release.keystore
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           flutter build apk --release \
             --dart-define=API_BASE_URL=${{ secrets.API_BASE_URL }}
