@@ -1,7 +1,10 @@
 // tts_mobile.dart — Mobile implementation: เล่นเสียงจาก backend /tts endpoint
-// ใช้ audioplayers เล่น MP3 จาก backend Google TTS (คุณภาพดีเหมือน web)
+// ใช้ http POST + audioplayers เล่น MP3 จาก backend Google TTS
 import 'dart:async';
+import 'dart:io';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 
 String _baseUrl = '';
 final AudioPlayer _player = AudioPlayer();
@@ -35,12 +38,26 @@ Future<void> init({
 Future<void> speak(String text) async {
   await stop();
 
-  final encoded = Uri.encodeComponent(text);
-  final url = '$_baseUrl/tts?text=$encoded';
-
   try {
     _onStart?.call();
-    await _player.play(UrlSource(url));
+
+    // ใช้ POST เพื่อรองรับข้อความยาว
+    final response = await http.post(
+      Uri.parse('$_baseUrl/tts'),
+      headers: {'Content-Type': 'application/json'},
+      body: '{"text": ${_jsonEncode(text)}}',
+    ).timeout(const Duration(seconds: 15));
+
+    if (response.statusCode != 200) {
+      _onError?.call('TTS server error: ${response.statusCode}');
+      return;
+    }
+
+    // บันทึกไฟล์เสียงชั่วคราว แล้วเล่น
+    final dir = await getTemporaryDirectory();
+    final file = File('${dir.path}/tts_audio.mp3');
+    await file.writeAsBytes(response.bodyBytes);
+    await _player.play(DeviceFileSource(file.path));
   } catch (e) {
     _onError?.call(e.toString());
   }
@@ -50,4 +67,8 @@ Future<void> stop() async {
   try {
     await _player.stop();
   } catch (_) {}
+}
+
+String _jsonEncode(String text) {
+  return '"${text.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', '\\n')}"';
 }

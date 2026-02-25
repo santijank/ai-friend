@@ -544,15 +544,31 @@ def _clean_text_for_tts(text: str) -> str:
     return cleaned
 
 
+class TtsRequest(BaseModel):
+    text: str
+
+
 @app.get("/tts")
-async def text_to_speech(text: str = Query(..., min_length=1, max_length=500)):
-    """
-    แปลงข้อความเป็นเสียงภาษาไทย (Google TTS)
-    Returns: audio/mpeg stream
-    """
+async def text_to_speech_get(text: str = Query(..., min_length=1, max_length=500)):
+    """GET endpoint (backward compatible)"""
+    return await _generate_tts(text)
+
+
+@app.post("/tts")
+async def text_to_speech_post(req: TtsRequest):
+    """POST endpoint — รองรับข้อความยาว"""
+    return await _generate_tts(req.text)
+
+
+async def _generate_tts(text: str):
+    """แปลงข้อความเป็นเสียงภาษาไทย (Google TTS)"""
     cleaned = _clean_text_for_tts(text)
     if not cleaned:
         raise HTTPException(status_code=400, detail="No speakable text")
+
+    # ตัดให้ไม่เกิน 500 ตัวอักษร
+    if len(cleaned) > 500:
+        cleaned = cleaned[:500]
 
     try:
         tts = gTTS(text=cleaned, lang="th")
