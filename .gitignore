@@ -27,7 +27,6 @@ flutter_app/android/.gradle/
 flutter_app/android/app/debug/
 flutter_app/android/app/profile/
 flutter_app/android/app/release/
-*.keystore
 *.jks
 flutter_app/android/key.properties
 
