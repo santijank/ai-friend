@@ -1,0 +1,68 @@
+plugins {
+    id("com.android.application")
+    id("kotlin-android")
+    id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Load key.properties if exists (for local release builds)
+val keyPropertiesFile = rootProject.file("key.properties")
+val keyProperties = java.util.Properties()
+if (keyPropertiesFile.exists()) {
+    keyProperties.load(java.io.FileInputStream(keyPropertiesFile))
+}
+
+android {
+    namespace = "com.aifriend.ai_friend"
+    compileSdk = flutter.compileSdkVersion
+    ndkVersion = flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_17.toString()
+    }
+
+    defaultConfig {
+        applicationId = "com.aifriend.ai_friend"
+        minSdk = flutter.minSdkVersion
+        targetSdk = flutter.targetSdkVersion
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
+    }
+
+    signingConfigs {
+        create("release") {
+            // CI: environment variables / Local: key.properties
+            storeFile = file(
+                System.getenv("KEYSTORE_PATH")
+                    ?: keyProperties.getProperty("storeFile", "debug.keystore")
+            )
+            storePassword = System.getenv("KEYSTORE_PASSWORD")
+                ?: keyProperties.getProperty("storePassword", "")
+            keyAlias = System.getenv("KEY_ALIAS")
+                ?: keyProperties.getProperty("keyAlias", "")
+            keyPassword = System.getenv("KEY_PASSWORD")
+                ?: keyProperties.getProperty("keyPassword", "")
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = if (
+                System.getenv("KEYSTORE_PATH") != null ||
+                keyPropertiesFile.exists()
+            ) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
+        }
+    }
+}
+
+flutter {
+    source = "../.."
+}

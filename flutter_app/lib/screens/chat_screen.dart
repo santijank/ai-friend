@@ -1,0 +1,475 @@
+/// chat_screen.dart — หน้าแชทหลัก + Voice Input + Mood Picker
+import 'package:flutter/material.dart';
+import '../models/message.dart';
+import '../services/api_service.dart';
+import '../services/local_storage.dart';
+import '../services/notification_service.dart';
+import '../services/tts_service.dart';
+import '../widgets/chat_bubble.dart';
+import '../widgets/typing_indicator.dart';
+import '../widgets/voice_button.dart';
+import '../widgets/mood_picker.dart';
+
+class ChatScreen extends StatefulWidget {
+  const ChatScreen({super.key});
+
+  @override
+  State<ChatScreen> createState() => _ChatScreenState();
+}
+
+class _ChatScreenState extends State<ChatScreen> {
+  final TextEditingController _controller = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  List<Message> _messages = [];
+  bool _isTyping = false;
+  bool _showMoodPicker = false;
+  bool _isSpeaking = false;
+  List<Map<String, dynamic>> _criticalAlerts = [];
+  bool _alertDismissed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMessages();
+    _checkMoodReminder();
+    _fetchCriticalAlerts();
+    TtsService.addListener(_onTtsChanged);
+  }
+
+  void _onTtsChanged() {
+    if (!mounted) return;
+    setState(() => _isSpeaking = TtsService.isPlaying);
+  }
+
+  void _checkMoodReminder() {
+    // ถ้าตอนค่ำ (18:00+) และยังไม่ได้บันทึก mood → แสดง mood picker
+    final hour = DateTime.now().hour;
+    if (hour >= 18) {
+      setState(() => _showMoodPicker = true);
+    }
+  }
+
+  Future<void> _fetchCriticalAlerts() async {
+    try {
+      final data = await ApiService.getCriticalAlerts();
+      final alerts = (data['alerts'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+      if (mounted && alerts.isNotEmpty) {
+        setState(() {
+          _criticalAlerts = alerts;
+          _alertDismissed = false;
+        });
+        // พูดแจ้งเตือนภัยอัตโนมัติ
+        if (LocalStorage.autoSpeak) {
+          final title = alerts.first['title'] ?? '';
+          if (title.isNotEmpty) {
+            await TtsService.speak('ข่าวด่วน $title');
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _speakWelcome() async {
+    if (!LocalStorage.autoSpeak) return;
+    final name = LocalStorage.userName;
+    final hour = DateTime.now().hour;
+    String greeting;
+    if (hour < 12) {
+      greeting = 'สวัสดีตอนเช้า $name วันนี้เป็นไงบ้าง';
+    } else if (hour < 17) {
+      greeting = 'สวัสดีตอนบ่าย $name มีอะไรเล่าให้ฟังมั้ย';
+    } else {
+      greeting = 'สวัสดีตอนค่ำ $name วันนี้เป็นไงบ้าง';
+    }
+    await TtsService.speak(greeting);
+  }
+
+  void _loadMessages() {
+    _messages = LocalStorage.getMessages();
+    final isFirstOpen = _messages.isEmpty;
+    if (isFirstOpen) {
+      final name = LocalStorage.userName;
+      _messages.add(Message(
+        role: 'ai',
+        content: 'พร้อมคุยแล้ว $name~ มีอะไรเล่าให้ฟังมั้ย? 😊',
+      ));
+    }
+    setState(() {});
+    _scrollToBottom();
+
+    // พูดทักทายตอนเปิดแอป (delay เล็กน้อยให้ UI โหลดก่อน)
+    if (isFirstOpen) {
+      Future.delayed(const Duration(milliseconds: 500), _speakWelcome);
+    }
+  }
+
+  void _scrollToBottom() {
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  Future<void> _sendText(String text) async {
+    if (text.isEmpty) return;
+
+    final userMessage = Message(role: 'user', content: text);
+    setState(() {
+      _messages.add(userMessage);
+      _isTyping = true;
+    });
+    _controller.clear();
+    _scrollToBottom();
+
+    await LocalStorage.saveMessage(userMessage);
+
+    try {
+      final response = await ApiService.sendMessage(
+        userId: LocalStorage.userId,
+        message: text,
+      );
+
+      final reply = response['reply'] as String;
+      final aiMessage = Message(role: 'ai', content: reply);
+      setState(() {
+        _messages.add(aiMessage);
+        _isTyping = false;
+      });
+      _scrollToBottom();
+
+      await LocalStorage.saveMessage(aiMessage);
+
+      // พูดอัตโนมัติ
+      if (LocalStorage.autoSpeak) {
+        await TtsService.speak(reply);
+      }
+
+      // ถ้ามี reminder → ตั้ง notification
+      if (response['has_reminder'] == true) {
+        final reminderTime = response['reminder_time'] as String?;
+        final reminderMessage = response['reminder_message'] as String?;
+
+        if (reminderTime != null && reminderMessage != null) {
+          try {
+            final dt = DateTime.parse(reminderTime);
+            if (dt.isAfter(DateTime.now())) {
+              await NotificationService.scheduleReminder(
+                id: dt.millisecondsSinceEpoch ~/ 1000,
+                title: '🤖 ฟ้าเตือน~',
+                body: reminderMessage,
+                scheduledTime: dt,
+              );
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (e) {
+      final errorMessage = Message(
+        role: 'ai',
+        content: 'อุ๊ปส์ ฟ้าตอบไม่ได้ชั่วคราว ลองใหม่นะ~ 😅',
+      );
+      setState(() {
+        _messages.add(errorMessage);
+        _isTyping = false;
+      });
+      _scrollToBottom();
+      await LocalStorage.saveMessage(errorMessage);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final name = LocalStorage.userName;
+    final hour = DateTime.now().hour;
+    String greeting;
+    if (hour < 12) {
+      greeting = '☀️ สวัสดีตอนเช้า';
+    } else if (hour < 17) {
+      greeting = '🌤️ สวัสดีตอนบ่าย';
+    } else {
+      greeting = '🌙 สวัสดีตอนค่ำ';
+    }
+
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Text(
+                  '🤖 ฟ้า',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                ),
+                if (_isSpeaking) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.25),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.graphic_eq_rounded, size: 14, color: Colors.white),
+                        SizedBox(width: 4),
+                        Text(
+                          'กำลังพูด...',
+                          style: TextStyle(fontSize: 11, color: Colors.white),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            Text(
+              '$greeting $name',
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: const Color(0xFF6C9BCF),
+        foregroundColor: Colors.white,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: Icon(
+              LocalStorage.autoSpeak
+                  ? Icons.volume_up_rounded
+                  : Icons.volume_off_rounded,
+            ),
+            onPressed: () async {
+              final newVal = !LocalStorage.autoSpeak;
+              await LocalStorage.saveSetting('autoSpeak', newVal);
+              if (!newVal) TtsService.stop();
+              setState(() {});
+            },
+            tooltip: LocalStorage.autoSpeak
+                ? 'ปิดเสียงอัตโนมัติ'
+                : 'เปิดเสียงอัตโนมัติ',
+          ),
+          IconButton(
+            icon: const Icon(Icons.notifications_outlined),
+            onPressed: _showReminders,
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          // Mood Picker (แสดงตอนค่ำ)
+          if (_showMoodPicker)
+            MoodPicker(
+              onSaved: () {
+                setState(() => _showMoodPicker = false);
+              },
+            ),
+
+          // Alert Banner
+          if (_criticalAlerts.isNotEmpty && !_alertDismissed)
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFFD32F2F), Color(0xFFE53935)],
+                ),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.red.withValues(alpha: 0.3),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded,
+                      color: Colors.white, size: 28),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'ข่าวด่วน',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 13,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _criticalAlerts.first['title'] ?? '',
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 12),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white, size: 20),
+                    onPressed: () =>
+                        setState(() => _alertDismissed = true),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+            ),
+
+          // Chat messages
+          Expanded(
+            child: ListView.builder(
+              controller: _scrollController,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              itemCount: _messages.length + (_isTyping ? 1 : 0),
+              itemBuilder: (context, index) {
+                if (index == _messages.length && _isTyping) {
+                  return const TypingIndicator();
+                }
+                return ChatBubble(message: _messages[index]);
+              },
+            ),
+          ),
+
+          // Input bar
+          Container(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 24),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.05),
+                  blurRadius: 10,
+                  offset: const Offset(0, -2),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                // Text field
+                Expanded(
+                  child: TextField(
+                    controller: _controller,
+                    onSubmitted: (_) => _sendText(_controller.text.trim()),
+                    textInputAction: TextInputAction.send,
+                    decoration: InputDecoration(
+                      hintText: 'พิมพ์หรือกดไมค์เพื่อพูด...',
+                      hintStyle: TextStyle(color: Colors.grey.shade400),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: BorderSide.none,
+                      ),
+                      filled: true,
+                      fillColor: const Color(0xFFF5F7FA),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 12,
+                      ),
+                    ),
+                    maxLines: 4,
+                    minLines: 1,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Voice button (ใหญ่ขึ้น)
+                VoiceButton(
+                  onResult: (text) {
+                    _controller.text = text;
+                    _sendText(text);
+                  },
+                ),
+                const SizedBox(width: 6),
+                // Send button
+                FloatingActionButton.small(
+                  onPressed: _isTyping
+                      ? null
+                      : () => _sendText(_controller.text.trim()),
+                  backgroundColor: const Color(0xFF6C9BCF),
+                  child: const Icon(Icons.send_rounded, color: Colors.white),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showReminders() async {
+    try {
+      final reminders = await ApiService.getReminders(LocalStorage.userId);
+
+      if (!mounted) return;
+
+      showModalBottomSheet(
+        context: context,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        builder: (context) {
+          if (reminders.isEmpty) {
+            return const Padding(
+              padding: EdgeInsets.all(32),
+              child: Center(
+                child: Text(
+                  'ยังไม่มีรายการเตือน 📝\nลองบอกฟ้าว่ามีนัดอะไรสิ~',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 16, color: Colors.grey),
+                ),
+              ),
+            );
+          }
+
+          return ListView(
+            shrinkWrap: true,
+            padding: const EdgeInsets.all(16),
+            children: [
+              const Text(
+                '📋 รายการเตือน',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 12),
+              ...reminders.map((r) => ListTile(
+                    leading:
+                        const Icon(Icons.alarm, color: Color(0xFF6C9BCF)),
+                    title: Text(r['message'] ?? ''),
+                    subtitle: Text(r['remind_at'] ?? ''),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.check_circle_outline),
+                      onPressed: () async {
+                        await ApiService.completeReminder(r['id']);
+                        if (mounted) Navigator.pop(context);
+                      },
+                    ),
+                  )),
+            ],
+          );
+        },
+      );
+    } catch (_) {}
+  }
+
+  @override
+  void dispose() {
+    TtsService.removeListener(_onTtsChanged);
+    _controller.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+}

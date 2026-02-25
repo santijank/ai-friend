@@ -1,0 +1,40 @@
+name: ai_friend
+description: "ฟ้า AI Friend — AI เพื่อนคู่ใจ"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # HTTP
+  http: ^1.2.0
+
+  # Local Storage
+  hive_flutter: ^1.1.0
+
+  # Notifications
+  flutter_local_notifications: ^17.2.0
+  timezone: ^0.9.4
+
+  # Voice
+  flutter_tts: ^4.0.2
+  speech_to_text: ^6.6.0
+
+  # Device Info
+  device_info_plus: ^10.1.0
+
+  # UI
+  cupertino_icons: ^1.0.8
+  audioplayers: ^6.5.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
