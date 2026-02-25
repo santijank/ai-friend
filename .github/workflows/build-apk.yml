@@ -31,7 +31,11 @@ jobs:
 
       - name: Decode keystore
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > flutter_app/android/ai-friend-release.keystore
+          printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > flutter_app/android/ai-friend-release.keystore
+
+      - name: Verify keystore
+        run: |
+          keytool -list -keystore flutter_app/android/ai-friend-release.keystore -storepass ${{ secrets.KEYSTORE_PASSWORD }} -alias ${{ secrets.KEY_ALIAS }}
 
       - name: Build release APK
         working-directory: flutter_app
