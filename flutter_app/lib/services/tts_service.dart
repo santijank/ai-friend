@@ -31,7 +31,7 @@ class TtsService {
         },
       );
       _isInitialized = true;
-      debugPrint('TTS initialized (backend mode)');
+      debugPrint('TTS initialized OK — baseUrl: ${AppConfig.apiBaseUrl}');
     } catch (e) {
       debugPrint('TTS init error: $e');
       _isInitialized = true; // ยังให้ลองพูดได้
@@ -56,6 +56,7 @@ class TtsService {
   }
 
   static Future<void> speak(String text) async {
+    debugPrint('TtsService.speak called: initialized=$_isInitialized, text=${text.length} chars');
     if (text.isEmpty || !_isInitialized) return;
 
     if (_isPlaying) {
