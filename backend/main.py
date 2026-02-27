@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from gtts import gTTS
+import edge_tts
 
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -518,11 +518,15 @@ async def refresh_alerts():
         raise HTTPException(status_code=500, detail=f"Refresh failed: {str(e)}")
 
 
-# ==================== TTS: Google Text-to-Speech ====================
+# ==================== TTS: Microsoft Edge Neural TTS ====================
+
+# เสียง Neural ภาษาไทย — เหมือน Siri/Google Assistant
+TTS_VOICE = "th-TH-PremwadeeNeural"  # ผู้หญิง เสียงนุ่มเป็นธรรมชาติ
+# ทางเลือก: "th-TH-NiwatNeural" (ผู้ชาย)
+
 
 def _clean_text_for_tts(text: str) -> str:
-    """ลบ emoji และอักขระพิเศษก่อนส่งให้ gTTS"""
-    # ลบ emoji
+    """ลบ emoji และอักขระพิเศษก่อนส่งให้ TTS"""
     emoji_pattern = re.compile(
         "["
         "\U0001F600-\U0001F64F"
@@ -561,27 +565,36 @@ async def text_to_speech_post(req: TtsRequest):
 
 
 async def _generate_tts(text: str):
-    """แปลงข้อความเป็นเสียงภาษาไทย (Google TTS)"""
+    """แปลงข้อความเป็นเสียงไทย Neural (Microsoft Edge TTS) — เสียงเหมือนคนจริง"""
     cleaned = _clean_text_for_tts(text)
     if not cleaned:
         raise HTTPException(status_code=400, detail="No speakable text")
 
-    # ตัดให้ไม่เกิน 500 ตัวอักษร
-    if len(cleaned) > 500:
-        cleaned = cleaned[:500]
+    if len(cleaned) > 1000:
+        cleaned = cleaned[:1000]
 
     try:
-        tts = gTTS(text=cleaned, lang="th")
+        communicate = edge_tts.Communicate(cleaned, TTS_VOICE)
         audio_buffer = io.BytesIO()
-        tts.write_to_fp(audio_buffer)
+
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_buffer.write(chunk["data"])
+
         audio_buffer.seek(0)
+
+        if audio_buffer.getbuffer().nbytes < 100:
+            raise HTTPException(status_code=500, detail="TTS produced empty audio")
 
         return StreamingResponse(
             audio_buffer,
             media_type="audio/mpeg",
             headers={"Cache-Control": "public, max-age=3600"},
         )
+    except HTTPException:
+        raise
     except Exception as e:
+        logging.error(f"TTS error: {e}")
         raise HTTPException(status_code=500, detail=f"TTS error: {str(e)}")
 
 
