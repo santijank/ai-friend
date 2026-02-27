@@ -24,7 +24,11 @@ class _VoiceModeOverlayState extends State<VoiceModeOverlay>
   String _lastAiReply = '';
   bool _isActive = true;
   int _silenceCount = 0;
+  int _sttErrorCount = 0;
   static const int _maxSilence = 3;
+  static const int _maxSttErrors = 5;
+  Timer? _ttsTimeoutTimer;
+  bool _waitingForTtsComplete = false;
 
   late AnimationController _pulseCtrl;
   late AnimationController _thinkCtrl;
@@ -53,6 +57,7 @@ class _VoiceModeOverlayState extends State<VoiceModeOverlay>
   @override
   void dispose() {
     _isActive = false;
+    _ttsTimeoutTimer?.cancel();
     TtsService.removeListener(_onTtsChanged);
     _pulseCtrl.dispose();
     _thinkCtrl.dispose();
@@ -65,6 +70,12 @@ class _VoiceModeOverlayState extends State<VoiceModeOverlay>
   Future<void> _startListening() async {
     if (!_isActive || !mounted) return;
 
+    // หยุด TTS + audio ให้เรียบร้อยก่อนเปิดไมค์
+    await TtsService.stop();
+    await Future.delayed(const Duration(milliseconds: 300));
+
+    if (!_isActive || !mounted) return;
+
     setState(() {
       _state = VoiceModeState.listening;
       _transcript = '';
@@ -72,24 +83,33 @@ class _VoiceModeOverlayState extends State<VoiceModeOverlay>
     _stopAllAnimations();
     _pulseCtrl.repeat(reverse: true);
 
+    debugPrint('JARVIS: startListening (silence=$_silenceCount, sttErr=$_sttErrorCount)');
+
     await SttService.startListening(
       onResult: (text) {
         if (!mounted) return;
+        _sttErrorCount = 0; // reset error count on any result
         setState(() => _transcript = text);
       },
       onDone: () {
         if (!mounted || !_isActive) return;
+        debugPrint('JARVIS: STT done, transcript="${_transcript}"');
         _onSpeechDone();
       },
       onError: (error) {
-        debugPrint('Voice mode STT error: $error');
+        debugPrint('JARVIS: STT error: $error');
         if (!mounted || !_isActive) return;
-        // ลองใหม่ 1 ครั้ง
-        Future.delayed(const Duration(milliseconds: 500), () {
+        _sttErrorCount++;
+        if (_sttErrorCount >= _maxSttErrors) {
+          debugPrint('JARVIS: too many STT errors, exiting');
+          _exit();
+          return;
+        }
+        Future.delayed(const Duration(milliseconds: 800), () {
           if (_isActive && mounted) _startListening();
         });
       },
-      listenFor: const Duration(seconds: 30),
+      listenFor: const Duration(seconds: 15),
     );
   }
 
@@ -117,6 +137,8 @@ class _VoiceModeOverlayState extends State<VoiceModeOverlay>
     _stopAllAnimations();
     _thinkCtrl.repeat();
 
+    debugPrint('JARVIS: sending message...');
+
     try {
       final reply = await widget.onSendMessage(text);
 
@@ -124,19 +146,32 @@ class _VoiceModeOverlayState extends State<VoiceModeOverlay>
       _stopAllAnimations();
 
       if (reply != null && reply.isNotEmpty) {
+        debugPrint('JARVIS: got reply (${reply.length} chars), speaking...');
         setState(() {
           _state = VoiceModeState.speaking;
           _lastAiReply = reply;
         });
         _speakCtrl.repeat(reverse: true);
+
+        // ตั้ง timeout — ถ้า TTS ไม่จบใน 20 วินาที ให้วนลูปต่อ
+        _waitingForTtsComplete = true;
+        _ttsTimeoutTimer?.cancel();
+        _ttsTimeoutTimer = Timer(const Duration(seconds: 20), () {
+          debugPrint('JARVIS: TTS timeout! forcing next listen cycle');
+          if (_isActive && mounted && _waitingForTtsComplete) {
+            _waitingForTtsComplete = false;
+            _continueToListening();
+          }
+        });
+
         await TtsService.speak(reply);
-        // _onTtsChanged จะ handle การวนลูปกลับไปฟัง
+        // _onTtsChanged หรือ timeout จะ handle การวนลูป
       } else {
-        // Empty reply → กลับไปฟัง
+        debugPrint('JARVIS: empty reply, back to listening');
         _startListening();
       }
     } catch (e) {
-      debugPrint('Voice mode send error: $e');
+      debugPrint('JARVIS: send error: $e');
       if (!_isActive || !mounted) return;
       _startListening();
     }
@@ -145,15 +180,23 @@ class _VoiceModeOverlayState extends State<VoiceModeOverlay>
   void _onTtsChanged() {
     if (!mounted || !_isActive) return;
 
-    if (!TtsService.isPlaying && _state == VoiceModeState.speaking) {
-      _stopAllAnimations();
-      // Delay เล็กน้อยก่อนเริ่มฟังใหม่
-      Future.delayed(const Duration(milliseconds: 600), () {
-        if (_isActive && mounted) {
-          _startListening();
-        }
-      });
+    debugPrint('JARVIS: TTS changed — playing=${TtsService.isPlaying}, state=$_state, waiting=$_waitingForTtsComplete');
+
+    if (!TtsService.isPlaying && _state == VoiceModeState.speaking && _waitingForTtsComplete) {
+      _waitingForTtsComplete = false;
+      _ttsTimeoutTimer?.cancel();
+      debugPrint('JARVIS: TTS completed, scheduling next listen');
+      _continueToListening();
     }
+  }
+
+  void _continueToListening() {
+    _stopAllAnimations();
+    Future.delayed(const Duration(milliseconds: 800), () {
+      if (_isActive && mounted) {
+        _startListening();
+      }
+    });
   }
 
   void _stopAllAnimations() {
