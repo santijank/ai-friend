@@ -1,4 +1,5 @@
 /// onboarding_screen.dart — หน้าแนะนำตัวแบบสนทนา (ไม่ใช่ฟอร์ม)
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
 import '../services/local_storage.dart';
@@ -103,29 +104,46 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         break;
 
       case 2: // ถามเวลาตื่น
-        // แปลงเวลาง่าย ๆ
-        if (text.contains(':')) {
-          _wakeTime = text;
-        } else {
-          final hour = int.tryParse(text) ?? 7;
-          _wakeTime = '${hour.toString().padLeft(2, '0')}:00';
-        }
-
+        _wakeTime = _parseWakeTime(text);
+        debugPrint('Parsed wake time: "$text" → "$_wakeTime"');
         _step = 3;
         _registerUser();
         break;
     }
   }
 
+  /// แปลงเวลาจากหลายรูปแบบ → "HH:MM"
+  /// รองรับ: "6.30", "6:30", "6", "06:30", "14.30", "7"
+  String _parseWakeTime(String input) {
+    input = input.trim();
+
+    // รองรับทั้ง ":" และ "." เป็นตัวคั่น
+    if (input.contains(':') || input.contains('.')) {
+      final separator = input.contains(':') ? ':' : '.';
+      final parts = input.split(separator);
+      final h = (int.tryParse(parts[0]) ?? 7).clamp(0, 23);
+      final m = (int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0).clamp(0, 59);
+      return '${h.toString().padLeft(2, '0')}:${m.toString().padLeft(2, '0')}';
+    }
+
+    // ตัวเลขเดี่ยว เช่น "7" → "07:00"
+    final h = (int.tryParse(input) ?? 7).clamp(0, 23);
+    return '${h.toString().padLeft(2, '0')}:00';
+  }
+
   Future<void> _registerUser() async {
     setState(() => _isLoading = true);
 
     try {
+      debugPrint('Registering: name=$_userName, personality=$_personality, wake=$_wakeTime');
+
       final result = await ApiService.register(
         name: _userName,
         personality: _personality,
         wakeTime: _wakeTime,
       );
+
+      debugPrint('Registration OK: ${result['user_id']}');
 
       // บันทึกในเครื่อง
       await LocalStorage.saveUser(
@@ -165,7 +183,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         }
       });
     } catch (e) {
-      _addAIMessage('อุ๊ปส์ มีปัญหานิดหน่อย ลองใหม่อีกทีนะ 😅');
+      debugPrint('Registration error: $e');
+      _step = 2; // ย้อนกลับให้พิมพ์เวลาใหม่ได้
+      _addAIMessage(
+        'อุ๊ปส์ เชื่อมต่อไม่ได้ชั่วคราว 😅\n\n'
+        'ลองพิมพ์เวลาตื่นอีกครั้งนะ (เช่น 7 หรือ 6:30)',
+      );
     } finally {
       setState(() => _isLoading = false);
     }
