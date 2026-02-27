@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: ai-friend-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
