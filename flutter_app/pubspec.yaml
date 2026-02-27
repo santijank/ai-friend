@@ -23,6 +23,7 @@ dependencies:
   # Voice
   flutter_tts: ^4.0.2
   speech_to_text: ^6.6.0
+  android_intent_plus: ^5.0.0
 
   # Device Info
   device_info_plus: ^10.1.0

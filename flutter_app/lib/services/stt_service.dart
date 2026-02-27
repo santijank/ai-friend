@@ -1,15 +1,21 @@
 /// stt_service.dart — Speech-to-Text (พูดใส่แอป)
 /// รองรับหา locale ภาษาไทยอัตโนมัติจากอุปกรณ์
+/// แสดง dialog แนะนำถ้าไม่มี Thai speech recognition
 import 'package:flutter/foundation.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 class SttService {
   static final stt.SpeechToText _speech = stt.SpeechToText();
   static bool _isAvailable = false;
-  static String _thaiLocaleId = 'th_TH'; // default, จะถูกอัพเดทตอน init
+  static bool _hasThaiLocale = false;
+  static String _thaiLocaleId = 'th_TH';
+  static List<String> _allLocaleIds = [];
 
   static bool get isAvailable => _isAvailable;
   static bool get isListening => _speech.isListening;
+  static bool get hasThaiLocale => _hasThaiLocale;
+  static String get currentLocaleId => _thaiLocaleId;
+  static List<String> get availableLocaleIds => _allLocaleIds;
 
   static Future<bool> init() async {
     _isAvailable = await _speech.initialize(
@@ -29,23 +35,47 @@ class SttService {
   static Future<void> _findThaiLocale() async {
     try {
       final locales = await _speech.locales();
-      debugPrint('STT available locales: ${locales.length}');
+      _allLocaleIds = locales.map((l) => l.localeId).toList();
+      debugPrint('STT available locales (${locales.length}): ${_allLocaleIds.take(20).toList()}');
 
       // หา Thai locale — ลองหลายรูปแบบ
+      // ลำดับ: th_TH > th-TH > th > อะไรก็ได้ที่ขึ้นต้นด้วย th
+      final preferredIds = ['th_TH', 'th-TH', 'th'];
+
+      for (final preferred in preferredIds) {
+        for (final locale in locales) {
+          if (locale.localeId.toLowerCase() == preferred.toLowerCase()) {
+            _thaiLocaleId = locale.localeId;
+            _hasThaiLocale = true;
+            debugPrint('STT found Thai locale (exact): $_thaiLocaleId (${locale.name})');
+            return;
+          }
+        }
+      }
+
+      // fallback: หาอะไรก็ได้ที่ขึ้นต้นด้วย th
       for (final locale in locales) {
-        final id = locale.localeId.toLowerCase();
-        if (id.startsWith('th')) {
+        if (locale.localeId.toLowerCase().startsWith('th')) {
           _thaiLocaleId = locale.localeId;
-          debugPrint('STT found Thai locale: $_thaiLocaleId (${locale.name})');
+          _hasThaiLocale = true;
+          debugPrint('STT found Thai locale (prefix): $_thaiLocaleId (${locale.name})');
           return;
         }
       }
 
-      // ถ้าไม่เจอ Thai → log warning
-      debugPrint('STT WARNING: No Thai locale found! Using default: $_thaiLocaleId');
-      debugPrint('STT available: ${locales.map((l) => l.localeId).take(10).toList()}');
+      // ไม่เจอ Thai locale เลย
+      _hasThaiLocale = false;
+      debugPrint('STT WARNING: No Thai locale found! Device locales: $_allLocaleIds');
     } catch (e) {
       debugPrint('STT findThaiLocale error: $e');
+      _hasThaiLocale = false;
+    }
+  }
+
+  /// เรียก init ใหม่เพื่อ refresh locale list (หลังผู้ใช้ดาวน์โหลดภาษา)
+  static Future<void> refreshLocales() async {
+    if (_isAvailable) {
+      await _findThaiLocale();
     }
   }
 
@@ -61,7 +91,7 @@ class SttService {
     }
 
     try {
-      debugPrint('STT startListening with locale: $_thaiLocaleId');
+      debugPrint('STT startListening with locale: $_thaiLocaleId (hasThai=$_hasThaiLocale)');
       await _speech.listen(
         onResult: (result) {
           onResult(result.recognizedWords);

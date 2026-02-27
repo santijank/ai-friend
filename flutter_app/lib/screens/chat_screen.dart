@@ -4,12 +4,14 @@ import '../models/message.dart';
 import '../services/api_service.dart';
 import '../services/local_storage.dart';
 import '../services/notification_service.dart';
+import '../services/stt_service.dart';
 import '../services/tts_service.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/typing_indicator.dart';
 import '../widgets/voice_button.dart';
 import '../widgets/voice_mode_overlay.dart';
 import '../widgets/mood_picker.dart';
+import '../widgets/thai_stt_dialog.dart';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -190,8 +192,18 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // ==================== J.A.R.V.I.S. Voice Mode ====================
 
-  void _enterVoiceMode() {
+  Future<void> _enterVoiceMode() async {
+    // เช็ค Thai locale ก่อนเข้า JARVIS mode
+    if (!SttService.hasThaiLocale) {
+      final proceed = await showThaiSttDialog(context);
+      if (proceed != true) {
+        await SttService.refreshLocales();
+        if (!mounted || !SttService.hasThaiLocale) return;
+      }
+    }
+
     TtsService.stop();
+    if (!mounted) return;
     Navigator.of(context).push(
       PageRouteBuilder(
         opaque: true,

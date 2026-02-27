@@ -1,6 +1,7 @@
 /// voice_button.dart — ปุ่มไมค์ขนาดใหญ่ + Full-screen Listening Overlay
 import 'package:flutter/material.dart';
 import '../services/stt_service.dart';
+import 'thai_stt_dialog.dart';
 
 class VoiceButton extends StatefulWidget {
   final Function(String text) onResult;
@@ -34,6 +35,17 @@ class _VoiceButtonState extends State<VoiceButton>
 
   Future<void> _startListening() async {
     if (!SttService.isAvailable) return;
+
+    // ถ้าไม่มี Thai locale → แสดง dialog แนะนำ
+    if (!SttService.hasThaiLocale && mounted) {
+      final proceed = await showThaiSttDialog(context);
+      if (proceed != true) {
+        // กลับมาจากตั้งค่า → refresh locale list
+        await SttService.refreshLocales();
+        if (!mounted) return;
+        if (!SttService.hasThaiLocale) return; // ยังไม่มี → ไม่เปิดฟัง
+      }
+    }
 
     setState(() => _isListening = true);
     _pulseController.repeat(reverse: true);
