@@ -388,7 +388,8 @@ async def call_haiku(
 
 
 def parse_ai_response(raw_text: str) -> dict:
-    """แยกคำตอบ AI ออกเป็น reply, memory_update, reminder"""
+    """แยกคำตอบ AI ออกเป็น reply, memory_update, reminder
+    รองรับทั้งแบบมี REPLY: นำหน้า และไม่มี"""
 
     result = {
         "reply": "",
@@ -396,23 +397,30 @@ def parse_ai_response(raw_text: str) -> dict:
         "reminder": None,
     }
 
-    reply_match = re.search(r"REPLY:\s*(.+?)(?=MEMORY_UPDATE:|REMINDER:|$)", raw_text, re.DOTALL)
-    if reply_match:
-        result["reply"] = reply_match.group(1).strip()
-    else:
-        result["reply"] = raw_text.strip()
-
+    # ดึง MEMORY_UPDATE
     mem_match = re.search(r"MEMORY_UPDATE:\s*(.+?)(?=REMINDER:|$)", raw_text, re.DOTALL)
     if mem_match:
         mem_text = mem_match.group(1).strip()
         if mem_text.upper() != "NONE" and mem_text:
             result["memory_update"] = mem_text
 
+    # ดึง REMINDER
     rem_match = re.search(r"REMINDER:\s*(.+?)$", raw_text, re.DOTALL)
     if rem_match:
         rem_text = rem_match.group(1).strip()
         if rem_text.upper() != "NONE" and rem_text:
             result["reminder"] = rem_text
+
+    # ดึง REPLY — ลอง REPLY: ก่อน, ถ้าไม่มีก็ตัด MEMORY_UPDATE/REMINDER ออก
+    reply_match = re.search(r"REPLY:\s*(.+?)(?=MEMORY_UPDATE:|REMINDER:|$)", raw_text, re.DOTALL)
+    if reply_match:
+        result["reply"] = reply_match.group(1).strip()
+    else:
+        # AI ไม่ได้ใส่ REPLY: → เอา raw text แล้วตัด tags ออก
+        clean = raw_text
+        clean = re.sub(r"MEMORY_UPDATE:.*?(?=REMINDER:|$)", "", clean, flags=re.DOTALL)
+        clean = re.sub(r"REMINDER:.*$", "", clean, flags=re.DOTALL)
+        result["reply"] = clean.strip()
 
     return result
 
