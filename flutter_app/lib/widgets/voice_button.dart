@@ -4,8 +4,9 @@ import '../services/stt_service.dart';
 
 class VoiceButton extends StatefulWidget {
   final Function(String text) onResult;
+  final VoidCallback? onLongPress;
 
-  const VoiceButton({super.key, required this.onResult});
+  const VoiceButton({super.key, required this.onResult, this.onLongPress});
 
   @override
   State<VoiceButton> createState() => _VoiceButtonState();
@@ -67,6 +68,7 @@ class _VoiceButtonState extends State<VoiceButton>
 
     return GestureDetector(
       onTap: _startListening,
+      onLongPress: widget.onLongPress,
       child: Container(
         width: 44,
         height: 44,

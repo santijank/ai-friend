@@ -1,4 +1,4 @@
-/// chat_screen.dart — หน้าแชทหลัก + Voice Input + Mood Picker
+/// chat_screen.dart — หน้าแชทหลัก + Voice Input + Mood Picker + J.A.R.V.I.S. Mode
 import 'package:flutter/material.dart';
 import '../models/message.dart';
 import '../services/api_service.dart';
@@ -8,6 +8,7 @@ import '../services/tts_service.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/typing_indicator.dart';
 import '../widgets/voice_button.dart';
+import '../widgets/voice_mode_overlay.dart';
 import '../widgets/mood_picker.dart';
 
 class ChatScreen extends StatefulWidget {
@@ -115,8 +116,10 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  Future<void> _sendText(String text) async {
-    if (text.isEmpty) return;
+  /// ส่งข้อความ + รับคำตอบ AI
+  /// [speakReply] = true → พูดอัตโนมัติ (ปกติ), false → voice mode จัดการเอง
+  Future<String?> _sendText(String text, {bool speakReply = true}) async {
+    if (text.isEmpty) return null;
 
     final userMessage = Message(role: 'user', content: text);
     setState(() {
@@ -144,8 +147,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
       await LocalStorage.saveMessage(aiMessage);
 
-      // พูดอัตโนมัติ
-      if (LocalStorage.autoSpeak) {
+      // พูดอัตโนมัติ (เฉพาะโหมดปกติ)
+      if (speakReply && LocalStorage.autoSpeak) {
         await TtsService.speak(reply);
       }
 
@@ -168,6 +171,8 @@ class _ChatScreenState extends State<ChatScreen> {
           } catch (_) {}
         }
       }
+
+      return reply;
     } catch (e) {
       final errorMessage = Message(
         role: 'ai',
@@ -179,7 +184,28 @@ class _ChatScreenState extends State<ChatScreen> {
       });
       _scrollToBottom();
       await LocalStorage.saveMessage(errorMessage);
+      return null;
     }
+  }
+
+  // ==================== J.A.R.V.I.S. Voice Mode ====================
+
+  void _enterVoiceMode() {
+    TtsService.stop();
+    Navigator.of(context).push(
+      PageRouteBuilder(
+        opaque: true,
+        pageBuilder: (context, animation, secondaryAnimation) {
+          return VoiceModeOverlay(
+            onSendMessage: (text) => _sendText(text, speakReply: false),
+          );
+        },
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+        transitionDuration: const Duration(milliseconds: 300),
+      ),
+    );
   }
 
   @override
@@ -387,12 +413,13 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
                 const SizedBox(width: 8),
-                // Voice button (ใหญ่ขึ้น)
+                // Voice button: กดสั้น = one-shot, กดค้าง = J.A.R.V.I.S. mode
                 VoiceButton(
                   onResult: (text) {
                     _controller.text = text;
                     _sendText(text);
                   },
+                  onLongPress: _enterVoiceMode,
                 ),
                 const SizedBox(width: 6),
                 // Send button
