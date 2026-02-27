@@ -15,6 +15,7 @@ void Function()? _onStart;
 void Function()? _onComplete;
 void Function(String)? _onError;
 bool _deviceTtsReady = false;
+bool _usingBackendAudio = false;
 
 Future<void> init({
   required String baseUrl,
@@ -27,29 +28,61 @@ Future<void> init({
   _onComplete = onComplete;
   _onError = onError;
 
-  debugPrint('TTS init: baseUrl = $_baseUrl');
+  debugPrint('TTS init: baseUrl = "$_baseUrl"');
 
   // Setup audioplayers listener
   _player.onPlayerStateChanged.listen((state) {
+    debugPrint('TTS audioplayer state: $state');
     if (state == PlayerState.playing) {
       _onStart?.call();
-    } else if (state == PlayerState.completed) {
-      _onComplete?.call();
-    } else if (state == PlayerState.stopped) {
-      _onComplete?.call();
+    } else if (state == PlayerState.completed || state == PlayerState.stopped) {
+      if (_usingBackendAudio) {
+        _usingBackendAudio = false;
+        _onComplete?.call();
+      }
     }
   });
 
   // Setup device TTS fallback
   try {
-    await _deviceTts.setLanguage('th-TH');
+    // ตรวจสอบภาษาที่มี
+    final languages = await _deviceTts.getLanguages;
+    debugPrint('TTS available languages: $languages');
+
+    // ลองตั้งภาษาไทย — fallback ไปภาษาอื่นถ้าไม่มี
+    bool langSet = false;
+    for (final lang in ['th-TH', 'th', 'en-US']) {
+      try {
+        final result = await _deviceTts.setLanguage(lang);
+        debugPrint('TTS setLanguage($lang) result: $result');
+        if (result == 1) {
+          langSet = true;
+          break;
+        }
+      } catch (e) {
+        debugPrint('TTS setLanguage($lang) error: $e');
+      }
+    }
+
     await _deviceTts.setSpeechRate(0.5);
     await _deviceTts.setVolume(1.0);
-    _deviceTts.setStartHandler(() => _onStart?.call());
-    _deviceTts.setCompletionHandler(() => _onComplete?.call());
-    _deviceTts.setErrorHandler((msg) => _onError?.call(msg.toString()));
+    await _deviceTts.awaitSpeakCompletion(true);
+
+    _deviceTts.setStartHandler(() {
+      debugPrint('TTS device: started speaking');
+      _onStart?.call();
+    });
+    _deviceTts.setCompletionHandler(() {
+      debugPrint('TTS device: completed speaking');
+      _onComplete?.call();
+    });
+    _deviceTts.setErrorHandler((msg) {
+      debugPrint('TTS device error: $msg');
+      _onError?.call(msg.toString());
+    });
+
     _deviceTtsReady = true;
-    debugPrint('TTS fallback (device) ready');
+    debugPrint('TTS fallback (device) ready, langSet=$langSet');
   } catch (e) {
     debugPrint('TTS fallback init error: $e');
   }
@@ -57,7 +90,10 @@ Future<void> init({
 
 Future<void> speak(String text) async {
   await stop();
-  debugPrint('TTS speak: "${text.substring(0, text.length > 50 ? 50 : text.length)}..."');
+  await Future.delayed(const Duration(milliseconds: 50));
+
+  final preview = text.length > 50 ? text.substring(0, 50) : text;
+  debugPrint('TTS speak: "$preview..." (${text.length} chars, baseUrl="$_baseUrl")');
 
   // ลอง Backend Google TTS ก่อน (เสียงดี)
   if (_baseUrl.isNotEmpty) {
@@ -65,65 +101,78 @@ Future<void> speak(String text) async {
       final success = await _speakViaBackend(text);
       if (success) return;
     } catch (e) {
-      debugPrint('TTS backend error: $e');
+      debugPrint('TTS backend exception: $e');
     }
+  } else {
+    debugPrint('TTS: no baseUrl, skipping backend');
   }
 
   // Fallback: ใช้ device TTS
-  debugPrint('TTS fallback to device TTS');
+  debugPrint('TTS: falling back to device TTS');
   await _speakViaDevice(text);
 }
 
 Future<bool> _speakViaBackend(String text) async {
-  debugPrint('TTS trying backend: $_baseUrl/tts');
-  _onStart?.call();
+  debugPrint('TTS trying backend POST: $_baseUrl/tts');
 
-  final response = await http.post(
-    Uri.parse('$_baseUrl/tts'),
-    headers: {'Content-Type': 'application/json; charset=utf-8'},
-    body: jsonEncode({'text': text}),
-  ).timeout(const Duration(seconds: 10));
+  try {
+    final response = await http.post(
+      Uri.parse('$_baseUrl/tts'),
+      headers: {'Content-Type': 'application/json; charset=utf-8'},
+      body: jsonEncode({'text': text}),
+    ).timeout(const Duration(seconds: 10));
 
-  debugPrint('TTS backend response: ${response.statusCode}');
+    debugPrint('TTS backend response: ${response.statusCode}, ${response.bodyBytes.length} bytes');
 
-  if (response.statusCode != 200) {
-    debugPrint('TTS backend error body: ${response.body}');
+    if (response.statusCode != 200) {
+      debugPrint('TTS backend error body: ${response.body}');
+      return false;
+    }
+
+    if (response.bodyBytes.length < 100) {
+      debugPrint('TTS backend returned too small audio');
+      return false;
+    }
+
+    // Save and play MP3
+    final dir = await getTemporaryDirectory();
+    final file = File('${dir.path}/tts_audio_${DateTime.now().millisecondsSinceEpoch}.mp3');
+    await file.writeAsBytes(response.bodyBytes);
+    debugPrint('TTS saved MP3: ${file.path} (${response.bodyBytes.length} bytes)');
+
+    _usingBackendAudio = true;
+    _onStart?.call();
+    await _player.play(DeviceFileSource(file.path));
+    debugPrint('TTS audioplayer.play() called');
+    return true;
+  } catch (e) {
+    debugPrint('TTS backend failed: $e');
     return false;
   }
-
-  if (response.bodyBytes.length < 100) {
-    debugPrint('TTS backend returned too small audio (${response.bodyBytes.length} bytes)');
-    return false;
-  }
-
-  // Save and play MP3
-  final dir = await getTemporaryDirectory();
-  final file = File('${dir.path}/tts_audio.mp3');
-  await file.writeAsBytes(response.bodyBytes);
-  debugPrint('TTS playing MP3 (${response.bodyBytes.length} bytes)');
-  await _player.play(DeviceFileSource(file.path));
-  return true;
 }
 
 Future<void> _speakViaDevice(String text) async {
   if (!_deviceTtsReady) {
-    debugPrint('TTS device not ready, cannot speak');
+    debugPrint('TTS device not ready');
     _onError?.call('Device TTS not available');
     return;
   }
 
-  _onStart?.call();
   // ตัดข้อความให้สั้นลงสำหรับ device TTS
-  final shortText = text.length > 300 ? text.substring(0, 300) : text;
+  final shortText = text.length > 500 ? text.substring(0, 500) : text;
   debugPrint('TTS device speaking: ${shortText.length} chars');
-  await _deviceTts.speak(shortText);
+
+  try {
+    final result = await _deviceTts.speak(shortText);
+    debugPrint('TTS device speak result: $result');
+  } catch (e) {
+    debugPrint('TTS device speak error: $e');
+    _onError?.call('Device TTS error: $e');
+  }
 }
 
 Future<void> stop() async {
-  try {
-    await _player.stop();
-  } catch (_) {}
-  try {
-    await _deviceTts.stop();
-  } catch (_) {}
+  _usingBackendAudio = false;
+  try { await _player.stop(); } catch (_) {}
+  try { await _deviceTts.stop(); } catch (_) {}
 }
