@@ -174,6 +174,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
       return reply;
     } catch (e) {
+      debugPrint('Chat error: $e');
       final errorMessage = Message(
         role: 'ai',
         content: 'อุ๊ปส์ ฟ้าตอบไม่ได้ชั่วคราว ลองใหม่นะ~ 😅',

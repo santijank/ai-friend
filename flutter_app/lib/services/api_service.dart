@@ -1,7 +1,9 @@
 /// api_service.dart — เชื่อมต่อ Backend API
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../config.dart';
+import 'local_storage.dart';
 
 class ApiService {
   static String get _baseUrl => AppConfig.apiBaseUrl;
@@ -30,12 +32,45 @@ class ApiService {
     throw Exception('Registration failed: ${response.statusCode}');
   }
 
-  /// ส่งข้อความแชท
+  /// Auto-reregister เมื่อ server DB reset (Render free tier)
+  /// ใช้ข้อมูลเดิมจาก LocalStorage + สร้าง user ใหม่บน server
+  static Future<bool> _autoReRegister() async {
+    try {
+      final name = LocalStorage.userName;
+      final personality = LocalStorage.personality;
+      if (name.isEmpty) return false;
+
+      debugPrint('Auto-reregistering user: $name (DB was reset)');
+
+      final result = await register(
+        name: name,
+        personality: personality,
+        wakeTime: LocalStorage.wakeTime,
+        sleepTime: LocalStorage.sleepTime,
+      );
+
+      // อัพเดต userId ใหม่ (server สร้าง id ใหม่)
+      final newUserId = result['user_id'] as String;
+      await LocalStorage.saveUser(
+        userId: newUserId,
+        name: name,
+        personality: personality,
+      );
+
+      debugPrint('Auto-reregistered with new userId: $newUserId');
+      return true;
+    } catch (e) {
+      debugPrint('Auto-reregister failed: $e');
+      return false;
+    }
+  }
+
+  /// ส่งข้อความแชท (auto-reregister ถ้า user หายจาก DB)
   static Future<Map<String, dynamic>> sendMessage({
     required String userId,
     required String message,
   }) async {
-    final response = await http.post(
+    var response = await http.post(
       Uri.parse('$_baseUrl/chat'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
@@ -44,10 +79,29 @@ class ApiService {
       }),
     );
 
+    // ถ้า 404 = user ไม่เจอ (DB reset เพราะ Render restart)
+    // → auto-reregister แล้ว retry ด้วย userId ใหม่
+    if (response.statusCode == 404) {
+      debugPrint('User not found (404), attempting auto-reregister...');
+      final ok = await _autoReRegister();
+      if (ok) {
+        // retry ด้วย userId ใหม่
+        final newUserId = LocalStorage.userId;
+        response = await http.post(
+          Uri.parse('$_baseUrl/chat'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'user_id': newUserId,
+            'message': message,
+          }),
+        );
+      }
+    }
+
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
     }
-    throw Exception('Chat failed: ${response.statusCode}');
+    throw Exception('Chat failed: ${response.statusCode} - ${response.body}');
   }
 
   /// ดึง reminders

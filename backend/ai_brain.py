@@ -8,15 +8,24 @@ import os
 import json
 import re
 import random
+import logging
 from datetime import datetime
 
 import httpx
 
 import database as db
 
+logger = logging.getLogger(__name__)
+
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 MODEL = "claude-haiku-4-5-20251001"
 API_URL = "https://api.anthropic.com/v1/messages"
+
+# Log API key status on import (masked)
+if ANTHROPIC_API_KEY:
+    logger.info(f"ANTHROPIC_API_KEY loaded: {ANTHROPIC_API_KEY[:8]}...{ANTHROPIC_API_KEY[-4:]}")
+else:
+    logger.error("ANTHROPIC_API_KEY is NOT set! Claude API will fail.")
 
 
 # ==================== Smart Context Builder ====================
@@ -375,6 +384,10 @@ async def call_haiku(
         )
 
     if response.status_code != 200:
+        logger.error(
+            f"Claude API error {response.status_code} for user '{user_name}': "
+            f"{response.text[:500]}"
+        )
         return {
             "reply": f"อุ๊ปส์ ฟ้าตอบไม่ได้ชั่วคราว ลองใหม่นะ {user_name}~ 😅",
             "memory_update": None,
@@ -383,6 +396,9 @@ async def call_haiku(
 
     data = response.json()
     raw_text = data["content"][0]["text"]
+    logger.info(f"Claude API success for '{user_name}', tokens: "
+                f"in={data.get('usage', {}).get('input_tokens', '?')}, "
+                f"out={data.get('usage', {}).get('output_tokens', '?')}")
 
     return parse_ai_response(raw_text)
 

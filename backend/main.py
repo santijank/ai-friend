@@ -184,88 +184,116 @@ async def chat(req: ChatRequest):
     แชทกับ AI เพื่อน
     ส่ง: user_id + message
     ได้: reply + reminder (ถ้ามี)
-    
+
     ระบบ 2 ชั้น:
     1. ลอง local reply ก่อน (ฟรี)
     2. ถ้าตอบไม่ได้ → ส่งไป Claude Haiku
     """
+    logger = logging.getLogger(__name__)
+
     # ดึงข้อมูลผู้ใช้
     user = db.get_user(req.user_id)
     if not user:
+        logger.warning(f"User not found: {req.user_id}")
         raise HTTPException(status_code=404, detail="User not found. Please register first.")
 
     user_name = user["name"]
     personality = user["personality"]
-    memory = json.loads(user["memory"]) if isinstance(user["memory"], str) else user["memory"]
+
+    try:
+        memory = json.loads(user["memory"]) if isinstance(user["memory"], str) else user["memory"]
+        if memory is None:
+            memory = {}
+    except (json.JSONDecodeError, TypeError):
+        logger.warning(f"Bad memory JSON for user {req.user_id}, resetting")
+        memory = {}
 
     # บันทึกข้อความผู้ใช้
-    db.save_message(req.user_id, "user", req.message)
+    try:
+        db.save_message(req.user_id, "user", req.message)
+    except Exception as e:
+        logger.error(f"Failed to save user message: {e}")
 
-    # ========== รวบรวม Full Context (ข้อมูลทั้งหมดของผู้ใช้) ==========
-    today_str = date.today().isoformat()
-    mood_history = db.get_mood_history(req.user_id, days=7)
-    routines = db.get_routines(req.user_id)
-    pending_reminders = db.get_pending_reminders(req.user_id)
-    stats = db.get_user_stats(req.user_id)
+    try:
+        # ========== รวบรวม Full Context (ข้อมูลทั้งหมดของผู้ใช้) ==========
+        today_str = date.today().isoformat()
+        mood_history = db.get_mood_history(req.user_id, days=7)
+        routines = db.get_routines(req.user_id)
+        pending_reminders = db.get_pending_reminders(req.user_id)
+        stats = db.get_user_stats(req.user_id)
 
-    routine_status = []
-    for r in routines:
-        done = db.is_routine_done_today(r["id"], today_str)
-        routine_status.append({
-            "title": r["title"],
-            "time": r.get("time", ""),
-            "done": done,
-            "points": r["points"],
-        })
+        routine_status = []
+        for r in routines:
+            done = db.is_routine_done_today(r["id"], today_str)
+            routine_status.append({
+                "title": r["title"],
+                "time": r.get("time", ""),
+                "done": done,
+                "points": r["points"],
+            })
 
-    user_context = {
-        "wake_time": user.get("wake_time", "07:00"),
-        "sleep_time": user.get("sleep_time", "23:00"),
-        "mood_history": mood_history,
-        "routine_status": routine_status,
-        "pending_reminders": [dict(r) for r in pending_reminders],
-        "streak": stats.get("streak", 0),
-        "total_points": stats.get("total_points", 0),
-    }
+        user_context = {
+            "wake_time": user.get("wake_time", "07:00"),
+            "sleep_time": user.get("sleep_time", "23:00"),
+            "mood_history": mood_history,
+            "routine_status": routine_status,
+            "pending_reminders": [dict(r) for r in pending_reminders],
+            "streak": stats.get("streak", 0),
+            "total_points": stats.get("total_points", 0),
+        }
 
-    # ========== ชั้น 1: Local Reply (ฟรี) + Context-Aware ==========
-    local_reply = try_local_reply(req.message, user_name, user_context)
-    if local_reply:
-        db.save_message(req.user_id, "assistant", local_reply)
-        return ChatResponse(reply=local_reply)
+        # ========== ชั้น 1: Local Reply (ฟรี) + Context-Aware ==========
+        local_reply = try_local_reply(req.message, user_name, user_context)
+        if local_reply:
+            db.save_message(req.user_id, "assistant", local_reply)
+            logger.info(f"Local reply for '{user_name}': {local_reply[:50]}")
+            return ChatResponse(reply=local_reply)
 
-    # ========== ชั้น 2: Claude Haiku + Full Context ==========
-    recent_messages = db.get_recent_messages(req.user_id, limit=6)
-    ai_result = await call_haiku(
-        message=req.message,
-        user_name=user_name,
-        personality=personality,
-        memory=memory,
-        recent_messages=recent_messages,
-        user_context=user_context,
-    )
+        # ========== ชั้น 2: Claude Haiku + Full Context ==========
+        recent_messages = db.get_recent_messages(req.user_id, limit=6)
+        ai_result = await call_haiku(
+            message=req.message,
+            user_name=user_name,
+            personality=personality,
+            memory=memory,
+            recent_messages=recent_messages,
+            user_context=user_context,
+        )
 
-    reply = ai_result["reply"]
+        reply = ai_result["reply"]
 
-    # บันทึกคำตอบ AI
-    db.save_message(req.user_id, "assistant", reply)
+        # บันทึกคำตอบ AI
+        db.save_message(req.user_id, "assistant", reply)
 
-    # ========== จัดการ Memory ==========
-    if ai_result["memory_update"]:
-        process_memory_update(req.user_id, ai_result["memory_update"])
+        # ========== จัดการ Memory ==========
+        if ai_result["memory_update"]:
+            process_memory_update(req.user_id, ai_result["memory_update"])
 
-    # ========== จัดการ Reminder ==========
-    response = ChatResponse(reply=reply)
+        # ========== จัดการ Reminder ==========
+        response = ChatResponse(reply=reply)
 
-    if ai_result["reminder"]:
-        parsed = parse_reminder_text(ai_result["reminder"])
-        if parsed:
-            db.add_reminder(req.user_id, parsed["message"], parsed["remind_at"])
-            response.has_reminder = True
-            response.reminder_message = parsed["message"]
-            response.reminder_time = parsed["remind_at"]
+        if ai_result["reminder"]:
+            parsed = parse_reminder_text(ai_result["reminder"])
+            if parsed:
+                db.add_reminder(req.user_id, parsed["message"], parsed["remind_at"])
+                response.has_reminder = True
+                response.reminder_message = parsed["message"]
+                response.reminder_time = parsed["remind_at"]
 
-    return response
+        return response
+
+    except Exception as e:
+        logger.error(f"Chat error for user '{user_name}' ({req.user_id}): {e}", exc_info=True)
+        # Fallback: ลอง local reply อย่างเดียว (ไม่ต้อง context)
+        try:
+            local = try_local_reply(req.message, user_name)
+            if local:
+                return ChatResponse(reply=local)
+        except Exception:
+            pass
+        return ChatResponse(
+            reply=f"ขอโทษนะ {user_name} ฟ้ามีปัญหาชั่วคราว ลองใหม่อีกทีนะ~ 😅"
+        )
 
 
 @app.get("/reminders/{user_id}", response_model=list[ReminderItem])
@@ -310,6 +338,66 @@ async def health():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
+    }
+
+
+@app.get("/debug/test-ai")
+async def debug_test_ai():
+    """ทดสอบ Anthropic API key — เรียกด้วย message ง่ายๆ"""
+    import httpx as _httpx
+    from ai_brain import ANTHROPIC_API_KEY, MODEL, API_URL
+
+    if not ANTHROPIC_API_KEY:
+        return {"status": "error", "detail": "ANTHROPIC_API_KEY is not set"}
+
+    try:
+        async with _httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                API_URL,
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": MODEL,
+                    "max_tokens": 50,
+                    "messages": [{"role": "user", "content": "Say hello in Thai"}],
+                },
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            reply = data["content"][0]["text"]
+            return {
+                "status": "ok",
+                "model": MODEL,
+                "reply": reply,
+                "api_key_prefix": ANTHROPIC_API_KEY[:8] + "...",
+            }
+        else:
+            return {
+                "status": "error",
+                "http_status": resp.status_code,
+                "detail": resp.text[:500],
+                "api_key_prefix": ANTHROPIC_API_KEY[:8] + "...",
+            }
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
+@app.get("/debug/db-stats")
+async def debug_db_stats():
+    """ดูสถานะ Database — มี user กี่คน, message กี่ข้อความ"""
+    conn = db.get_db()
+    users = conn.execute("SELECT COUNT(*) as cnt FROM users").fetchone()["cnt"]
+    messages = conn.execute("SELECT COUNT(*) as cnt FROM messages").fetchone()["cnt"]
+    conn.close()
+    return {
+        "status": "ok",
+        "users": users,
+        "messages": messages,
+        "db_path": str(db.DB_PATH),
+        "db_exists": db.DB_PATH.exists(),
     }
 
 
