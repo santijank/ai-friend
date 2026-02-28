@@ -137,15 +137,19 @@ class NotificationService {
     );
   }
 
-  /// ตั้งเตือนครั้งเดียว (พร้อมเสียง)
+  /// ตั้งเตือนครั้งเดียว (พร้อมเสียง) — ไม่ throw exception
+  /// ใช้ 3-level fallback: exact → inexact → show ทันที
   static Future<void> scheduleReminder({
     required int id,
     required String title,
     required String body,
     required DateTime scheduledTime,
   }) async {
-    final tzTime = tz.TZDateTime.from(scheduledTime, tz.local);
-    debugPrint('Scheduling notification: "$body" at $tzTime (tz.local=${tz.local.name})');
+    // Safety: ถ้าเวลาเป็นอดีต → skip ไม่ throw
+    if (scheduledTime.isBefore(DateTime.now())) {
+      debugPrint('⚠️ scheduledTime is in the past, skipping notification');
+      return;
+    }
 
     const details = NotificationDetails(
       android: AndroidNotificationDetails(
@@ -163,7 +167,24 @@ class NotificationService {
       ),
     );
 
-    // ลอง exact alarm ก่อน → ถ้า permission ไม่ได้ fallback เป็น inexact
+    // แปลง timezone
+    tz.TZDateTime tzTime;
+    try {
+      tzTime = tz.TZDateTime.from(scheduledTime, tz.local);
+      debugPrint('Scheduling: "$body" at $tzTime (tz.local=${tz.local.name})');
+    } catch (e) {
+      debugPrint('⚠️ TZDateTime conversion failed: $e — using show() fallback');
+      // ถ้าแปลง timezone ไม่ได้ → แสดง notification ทันทีแทน
+      try {
+        await _plugin.show(id, title, body, details);
+        debugPrint('✅ Showed immediate notification (timezone fallback)');
+      } catch (e2) {
+        debugPrint('❌ Even immediate notification failed: $e2');
+      }
+      return;
+    }
+
+    // Level 1: exact alarm
     try {
       await _plugin.zonedSchedule(
         id, title, body, tzTime, details,
@@ -171,20 +192,36 @@ class NotificationService {
         uiLocalNotificationDateInterpretation:
             UILocalNotificationDateInterpretation.absoluteTime,
       );
-      debugPrint('Scheduled with exactAllowWhileIdle');
+      debugPrint('✅ Scheduled with exactAllowWhileIdle');
+      return;
     } catch (e) {
-      debugPrint('Exact alarm failed ($e), falling back to inexact');
+      debugPrint('⚠️ Exact alarm failed: $e');
+    }
+
+    // Level 2: inexact alarm
+    try {
       await _plugin.zonedSchedule(
         id, title, body, tzTime, details,
         androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
         uiLocalNotificationDateInterpretation:
             UILocalNotificationDateInterpretation.absoluteTime,
       );
-      debugPrint('Scheduled with inexactAllowWhileIdle (fallback)');
+      debugPrint('✅ Scheduled with inexactAllowWhileIdle');
+      return;
+    } catch (e) {
+      debugPrint('⚠️ Inexact alarm failed: $e');
+    }
+
+    // Level 3: immediate notification (ultimate fallback)
+    try {
+      await _plugin.show(id, title, '(จะเตือนเวลาถึง) $body', details);
+      debugPrint('✅ Showed immediate notification as fallback');
+    } catch (e) {
+      debugPrint('❌ Even immediate notification failed: $e');
     }
   }
 
-  /// ตั้งเตือนทุกวัน (เช่น ทักทายตอนเช้า) — พร้อมเสียง
+  /// ตั้งเตือนทุกวัน (เช่น ทักทายตอนเช้า) — ไม่ throw exception
   static Future<void> scheduleDailyReminder({
     required int id,
     required String title,
@@ -192,12 +229,6 @@ class NotificationService {
     required int hour,
     required int minute,
   }) async {
-    final now = tz.TZDateTime.now(tz.local);
-    var scheduled = tz.TZDateTime(tz.local, now.year, now.month, now.day, hour, minute);
-    if (scheduled.isBefore(now)) {
-      scheduled = scheduled.add(const Duration(days: 1));
-    }
-
     const details = NotificationDetails(
       android: AndroidNotificationDetails(
         'daily_v2',
@@ -214,6 +245,20 @@ class NotificationService {
       ),
     );
 
+    tz.TZDateTime scheduled;
+    try {
+      final now = tz.TZDateTime.now(tz.local);
+      scheduled = tz.TZDateTime(tz.local, now.year, now.month, now.day, hour, minute);
+      if (scheduled.isBefore(now)) {
+        scheduled = scheduled.add(const Duration(days: 1));
+      }
+      debugPrint('Daily reminder: "$body" at $hour:$minute (next: $scheduled)');
+    } catch (e) {
+      debugPrint('⚠️ Daily TZDateTime creation failed: $e');
+      return;
+    }
+
+    // Level 1: exact alarm
     try {
       await _plugin.zonedSchedule(
         id, title, body, scheduled, details,
@@ -222,8 +267,14 @@ class NotificationService {
             UILocalNotificationDateInterpretation.absoluteTime,
         matchDateTimeComponents: DateTimeComponents.time,
       );
+      debugPrint('✅ Daily scheduled with exactAllowWhileIdle');
+      return;
     } catch (e) {
-      debugPrint('Daily exact alarm failed ($e), falling back to inexact');
+      debugPrint('⚠️ Daily exact alarm failed: $e');
+    }
+
+    // Level 2: inexact alarm
+    try {
       await _plugin.zonedSchedule(
         id, title, body, scheduled, details,
         androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
@@ -231,6 +282,18 @@ class NotificationService {
             UILocalNotificationDateInterpretation.absoluteTime,
         matchDateTimeComponents: DateTimeComponents.time,
       );
+      debugPrint('✅ Daily scheduled with inexactAllowWhileIdle');
+      return;
+    } catch (e) {
+      debugPrint('⚠️ Daily inexact alarm failed: $e');
+    }
+
+    // Level 3: immediate fallback
+    try {
+      await _plugin.show(id, title, body, details);
+      debugPrint('✅ Daily showed immediate notification as fallback');
+    } catch (e) {
+      debugPrint('❌ Daily even immediate notification failed: $e');
     }
   }
 

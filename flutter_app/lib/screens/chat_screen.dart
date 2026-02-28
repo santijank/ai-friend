@@ -47,21 +47,28 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _rescheduleLocalReminders() async {
     try {
       final pending = LocalStorage.getPendingReminders();
+      var count = 0;
       for (final r in pending) {
-        final dt = DateTime.parse(
-          (r['remind_at'] as String).replaceAll(' ', 'T'),
-        );
-        await NotificationService.scheduleReminder(
-          id: dt.millisecondsSinceEpoch ~/ 1000,
-          title: '🤖 ฟ้าเตือน~',
-          body: r['message'] as String,
-          scheduledTime: dt,
-        );
+        // wrap แต่ละ reminder แยก — 1 fail ไม่กระทบตัวอื่น
+        try {
+          final dt = DateTime.parse(
+            (r['remind_at'] as String).replaceAll(' ', 'T'),
+          );
+          await NotificationService.scheduleReminder(
+            id: dt.millisecondsSinceEpoch ~/ 1000,
+            title: '🤖 ฟ้าเตือน~',
+            body: r['message'] as String,
+            scheduledTime: dt,
+          );
+          count++;
+        } catch (e) {
+          debugPrint('Failed to reschedule one reminder: $e');
+        }
       }
       // ลบ reminder หมดเวลา
       await LocalStorage.cleanExpiredReminders();
-      if (pending.isNotEmpty) {
-        debugPrint('Rescheduled ${pending.length} pending reminders from local storage');
+      if (count > 0) {
+        debugPrint('Rescheduled $count/${pending.length} pending reminders');
       }
     } catch (e) {
       debugPrint('Failed to reschedule reminders: $e');
@@ -199,7 +206,7 @@ class _ChatScreenState extends State<ChatScreen> {
         await TtsService.speak(reply);
       }
 
-      // ถ้ามี reminder → ตั้ง notification
+      // ถ้ามี reminder → เก็บลงเครื่องก่อน แล้วค่อยตั้ง notification
       if (response['has_reminder'] == true) {
         final reminderTime = response['reminder_time'] as String?;
         final reminderMessage = response['reminder_message'] as String?;
@@ -209,22 +216,22 @@ class _ChatScreenState extends State<ChatScreen> {
             // Backend ส่งเวลาเป็น Bangkok time (naive) เช่น "2025-03-01 14:00"
             final dt = DateTime.parse(reminderTime.replaceAll(' ', 'T'));
             if (dt.isAfter(DateTime.now())) {
-              // ตั้ง notification
+              // 1. เก็บลงเครื่องก่อน (กัน backend reset) — ควรสำเร็จเสมอ
+              await LocalStorage.saveReminder(
+                message: reminderMessage,
+                remindAt: reminderTime,
+              );
+              // 2. ตั้ง notification (อาจ fail ได้ — ไม่ fatal เพราะ save แล้ว)
               await NotificationService.scheduleReminder(
                 id: dt.millisecondsSinceEpoch ~/ 1000,
                 title: '🤖 ฟ้าเตือน~',
                 body: reminderMessage,
                 scheduledTime: dt,
               );
-              // เก็บลงเครื่อง (กัน backend reset)
-              await LocalStorage.saveReminder(
-                message: reminderMessage,
-                remindAt: reminderTime,
-              );
-              debugPrint('Reminder scheduled + saved locally: $reminderMessage at $dt');
+              debugPrint('Reminder saved + scheduled: $reminderMessage at $dt');
             }
           } catch (e) {
-            debugPrint('Failed to schedule reminder: $e');
+            debugPrint('Failed to handle reminder: $e');
           }
         }
       }
@@ -682,18 +689,23 @@ class _ChatScreenState extends State<ChatScreen> {
           '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
           '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
 
-      // ตั้ง local notification
-      await NotificationService.scheduleReminder(
-        id: dt.millisecondsSinceEpoch ~/ 1000,
-        title: '🤖 ฟ้าเตือน~',
-        body: message,
-        scheduledTime: dt,
-      );
-
-      // เก็บลงเครื่อง (กัน backend reset)
+      // 1. เก็บลงเครื่องก่อน (ควรสำเร็จเสมอ)
       await LocalStorage.saveReminder(message: message, remindAt: remindAt);
+      debugPrint('Reminder saved locally: $message at $remindAt');
 
-      // บันทึกลง backend (ถ้า fail ไม่เป็นไร เพราะเก็บในเครื่องแล้ว)
+      // 2. ตั้ง notification (อาจ fail ได้ — ไม่ fatal เพราะ save แล้ว)
+      try {
+        await NotificationService.scheduleReminder(
+          id: dt.millisecondsSinceEpoch ~/ 1000,
+          title: '🤖 ฟ้าเตือน~',
+          body: message,
+          scheduledTime: dt,
+        );
+      } catch (e) {
+        debugPrint('Notification scheduling failed (non-fatal): $e');
+      }
+
+      // 3. บันทึกลง backend (ไม่ fatal)
       try {
         await ApiService.addReminder(
           userId: LocalStorage.userId,
@@ -702,7 +714,7 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       } catch (_) {}
 
-      debugPrint('Custom reminder scheduled + saved: $message at $dt');
+      debugPrint('Custom reminder complete: $message at $dt');
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -710,7 +722,7 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       }
     } catch (e) {
-      debugPrint('Failed to add reminder: $e');
+      debugPrint('Failed to save reminder: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('ตั้งเตือนไม่สำเร็จ ลองใหม่นะ')),
