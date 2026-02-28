@@ -80,6 +80,17 @@ class LocalStorage {
     await _settingsBox.put(key, value);
   }
 
+  // === Seen Alerts (ไม่แสดง alert ซ้ำ) ===
+
+  static List<String> get seenAlertIds {
+    final raw = _settingsBox.get('seenAlertIds', defaultValue: <String>[]);
+    return (raw as List).cast<String>();
+  }
+
+  static Future<void> saveSeenAlertIds(List<String> ids) async {
+    await _settingsBox.put('seenAlertIds', ids);
+  }
+
   // === Clear All ===
 
   static Future<void> clearAll() async {

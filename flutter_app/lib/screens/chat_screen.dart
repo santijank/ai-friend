@@ -54,17 +54,38 @@ class _ChatScreenState extends State<ChatScreen> {
     try {
       final data = await ApiService.getCriticalAlerts();
       final alerts = (data['alerts'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-      if (mounted && alerts.isNotEmpty) {
-        setState(() {
-          _criticalAlerts = alerts;
-          _alertDismissed = false;
-        });
-        // พูดแจ้งเตือนภัยอัตโนมัติ
-        if (LocalStorage.autoSpeak) {
-          final title = alerts.first['title'] ?? '';
-          if (title.isNotEmpty) {
-            await TtsService.speak('ข่าวด่วน $title');
-          }
+      if (alerts.isEmpty || !mounted) return;
+
+      // กรอง alerts ที่เคยเห็นแล้วออก (ไม่แสดงซ้ำ)
+      final seenIds = LocalStorage.seenAlertIds;
+      final newAlerts = alerts.where((a) {
+        final key = '${a['id']}_${a['title']}';
+        return !seenIds.contains(key);
+      }).toList();
+
+      if (newAlerts.isEmpty) return;
+
+      setState(() {
+        _criticalAlerts = newAlerts;
+        _alertDismissed = false;
+      });
+
+      // บันทึกว่าเห็น alerts เหล่านี้แล้ว
+      final newSeenIds = [...seenIds];
+      for (final a in newAlerts) {
+        newSeenIds.add('${a['id']}_${a['title']}');
+      }
+      // เก็บแค่ 50 ตัวล่าสุด
+      if (newSeenIds.length > 50) {
+        newSeenIds.removeRange(0, newSeenIds.length - 50);
+      }
+      await LocalStorage.saveSeenAlertIds(newSeenIds);
+
+      // พูดแจ้งเตือนภัยอัตโนมัติ
+      if (LocalStorage.autoSpeak) {
+        final title = newAlerts.first['title'] ?? '';
+        if (title.isNotEmpty) {
+          await TtsService.speak('ข่าวด่วน $title');
         }
       }
     } catch (_) {}
@@ -167,8 +188,11 @@ class _ChatScreenState extends State<ChatScreen> {
                 body: reminderMessage,
                 scheduledTime: dt,
               );
+              debugPrint('Reminder scheduled: $reminderMessage at $dt');
             }
-          } catch (_) {}
+          } catch (e) {
+            debugPrint('Failed to schedule reminder: $e');
+          }
         }
       }
 
