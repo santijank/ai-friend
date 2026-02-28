@@ -58,6 +58,24 @@ class ApiService {
       );
 
       debugPrint('Auto-reregistered with new userId: $newUserId');
+
+      // Sync local reminders ไป backend ใหม่
+      try {
+        final pendingReminders = LocalStorage.getPendingReminders();
+        for (final r in pendingReminders) {
+          await addReminder(
+            userId: newUserId,
+            message: r['message'] as String,
+            remindAt: r['remind_at'] as String,
+          );
+        }
+        if (pendingReminders.isNotEmpty) {
+          debugPrint('Synced ${pendingReminders.length} reminders to new backend');
+        }
+      } catch (e) {
+        debugPrint('Reminder sync failed (non-critical): $e');
+      }
+
       return true;
     } catch (e) {
       debugPrint('Auto-reregister failed: $e');

@@ -1,4 +1,5 @@
 /// notification_service.dart — จัดการ Local Notifications (พร้อมเสียง)
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/timezone.dart' as tz;
 import 'package:timezone/data/latest.dart' as tz_data;
@@ -7,7 +8,9 @@ class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
 
   static Future<void> init() async {
+    // ตั้ง timezone เป็น Bangkok (สำคัญมาก! ถ้าไม่ตั้ง จะใช้ UTC)
     tz_data.initializeTimeZones();
+    tz.setLocalLocation(tz.getLocation('Asia/Bangkok'));
 
     const androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -69,15 +72,28 @@ class NotificationService {
     final android = _plugin.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
     if (android != null) {
-      await android.requestNotificationsPermission();
+      // ขอ notification permission (Android 13+)
+      final granted = await android.requestNotificationsPermission();
+      debugPrint('Notification permission: $granted');
+
+      // ขอ exact alarm permission (Android 12+)
+      final exactAlarm = await android.requestExactAlarmsPermission();
+      debugPrint('Exact alarm permission: $exactAlarm');
+
+      return granted ?? false;
     }
 
     final ios = _plugin.resolvePlatformSpecificImplementation<
         IOSFlutterLocalNotificationsPlugin>();
     if (ios != null) {
-      await ios.requestPermissions(alert: true, badge: true, sound: true);
+      final granted = await ios.requestPermissions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+      return granted ?? false;
     }
-    return true;
+    return false;
   }
 
   /// แสดง critical alert ทันที (พร้อมเสียง + ปลุกจอ)
@@ -120,11 +136,14 @@ class NotificationService {
     required String body,
     required DateTime scheduledTime,
   }) async {
+    final tzTime = tz.TZDateTime.from(scheduledTime, tz.local);
+    debugPrint('Scheduling notification: "$body" at $tzTime (tz.local=${tz.local.name})');
+
     await _plugin.zonedSchedule(
       id,
       title,
       body,
-      tz.TZDateTime.from(scheduledTime, tz.local),
+      tzTime,
       const NotificationDetails(
         android: AndroidNotificationDetails(
           'reminders_v2',
@@ -140,7 +159,7 @@ class NotificationService {
           presentSound: true,
         ),
       ),
-      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      androidScheduleMode: AndroidScheduleMode.exactAndAllowWhileIdle,
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
     );
@@ -180,7 +199,7 @@ class NotificationService {
           presentSound: true,
         ),
       ),
-      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      androidScheduleMode: AndroidScheduleMode.exactAndAllowWhileIdle,
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
       matchDateTimeComponents: DateTimeComponents.time,

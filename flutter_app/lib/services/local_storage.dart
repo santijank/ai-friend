@@ -7,12 +7,14 @@ class LocalStorage {
   static late Box _userBox;
   static late Box _messageBox;
   static late Box _settingsBox;
+  static late Box _reminderBox;
 
   static Future<void> init() async {
     await Hive.initFlutter();
     _userBox = await Hive.openBox('user');
     _messageBox = await Hive.openBox('messages');
     _settingsBox = await Hive.openBox('settings');
+    _reminderBox = await Hive.openBox('reminders');
   }
 
   // === User ===
@@ -91,11 +93,64 @@ class LocalStorage {
     await _settingsBox.put('seenAlertIds', ids);
   }
 
+  // === Reminders (เก็บในเครื่อง ไม่หายแม้ backend reset) ===
+
+  /// บันทึก reminder ลงเครื่อง
+  static Future<void> saveReminder({
+    required String message,
+    required String remindAt,
+  }) async {
+    final reminders = getLocalReminders();
+    reminders.add({
+      'message': message,
+      'remind_at': remindAt,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+    await _reminderBox.put(
+      'list',
+      reminders.map((r) => jsonEncode(r)).toList(),
+    );
+  }
+
+  /// ดึง reminder ทั้งหมดจากเครื่อง
+  static List<Map<String, dynamic>> getLocalReminders() {
+    final raw = _reminderBox.get('list', defaultValue: <String>[]);
+    final list = (raw as List).cast<String>();
+    return list
+        .map((json) => jsonDecode(json) as Map<String, dynamic>)
+        .toList();
+  }
+
+  /// ดึงเฉพาะ reminder ที่ยังไม่หมดเวลา
+  static List<Map<String, dynamic>> getPendingReminders() {
+    final now = DateTime.now();
+    return getLocalReminders().where((r) {
+      try {
+        final dt = DateTime.parse(
+          (r['remind_at'] as String).replaceAll(' ', 'T'),
+        );
+        return dt.isAfter(now);
+      } catch (_) {
+        return false;
+      }
+    }).toList();
+  }
+
+  /// ลบ reminder ที่หมดเวลาแล้ว
+  static Future<void> cleanExpiredReminders() async {
+    final pending = getPendingReminders();
+    await _reminderBox.put(
+      'list',
+      pending.map((r) => jsonEncode(r)).toList(),
+    );
+  }
+
   // === Clear All ===
 
   static Future<void> clearAll() async {
     await _userBox.clear();
     await _messageBox.clear();
     await _settingsBox.clear();
+    await _reminderBox.clear();
   }
 }

@@ -16,6 +16,7 @@ void main() async {
   // เริ่มต้น services
   await LocalStorage.init();
   await NotificationService.init();
+  await NotificationService.requestPermission();
   await TtsService.init();
   await SttService.init();
 

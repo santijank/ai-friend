@@ -34,12 +34,38 @@ class _ChatScreenState extends State<ChatScreen> {
     _loadMessages();
     _checkMoodReminder();
     _fetchCriticalAlerts();
+    _rescheduleLocalReminders();
     TtsService.addListener(_onTtsChanged);
   }
 
   void _onTtsChanged() {
     if (!mounted) return;
     setState(() => _isSpeaking = TtsService.isPlaying);
+  }
+
+  /// Reschedule pending reminders จาก local storage (กันหาย)
+  Future<void> _rescheduleLocalReminders() async {
+    try {
+      final pending = LocalStorage.getPendingReminders();
+      for (final r in pending) {
+        final dt = DateTime.parse(
+          (r['remind_at'] as String).replaceAll(' ', 'T'),
+        );
+        await NotificationService.scheduleReminder(
+          id: dt.millisecondsSinceEpoch ~/ 1000,
+          title: '🤖 ฟ้าเตือน~',
+          body: r['message'] as String,
+          scheduledTime: dt,
+        );
+      }
+      // ลบ reminder หมดเวลา
+      await LocalStorage.cleanExpiredReminders();
+      if (pending.isNotEmpty) {
+        debugPrint('Rescheduled ${pending.length} pending reminders from local storage');
+      }
+    } catch (e) {
+      debugPrint('Failed to reschedule reminders: $e');
+    }
   }
 
   void _checkMoodReminder() {
@@ -183,13 +209,19 @@ class _ChatScreenState extends State<ChatScreen> {
             // Backend ส่งเวลาเป็น Bangkok time (naive) เช่น "2025-03-01 14:00"
             final dt = DateTime.parse(reminderTime.replaceAll(' ', 'T'));
             if (dt.isAfter(DateTime.now())) {
+              // ตั้ง notification
               await NotificationService.scheduleReminder(
                 id: dt.millisecondsSinceEpoch ~/ 1000,
                 title: '🤖 ฟ้าเตือน~',
                 body: reminderMessage,
                 scheduledTime: dt,
               );
-              debugPrint('Reminder scheduled: $reminderMessage at $dt');
+              // เก็บลงเครื่อง (กัน backend reset)
+              await LocalStorage.saveReminder(
+                message: reminderMessage,
+                remindAt: reminderTime,
+              );
+              debugPrint('Reminder scheduled + saved locally: $reminderMessage at $dt');
             }
           } catch (e) {
             debugPrint('Failed to schedule reminder: $e');
@@ -466,68 +498,77 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _showReminders() async {
+    // ลองดึงจาก backend ก่อน ถ้า fail ใช้ local
+    List<Map<String, dynamic>> reminders;
+    bool isLocal = false;
     try {
-      final reminders = await ApiService.getReminders(LocalStorage.userId);
+      reminders = await ApiService.getReminders(LocalStorage.userId);
+    } catch (_) {
+      // Backend fail → ใช้ local reminders
+      reminders = LocalStorage.getPendingReminders();
+      isLocal = true;
+    }
 
-      if (!mounted) return;
+    if (!mounted) return;
 
-      showModalBottomSheet(
-        context: context,
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        builder: (context) {
-          return ListView(
-            shrinkWrap: true,
-            padding: const EdgeInsets.all(16),
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  const Text(
-                    '📋 รายการเตือน',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  TextButton.icon(
-                    onPressed: () {
-                      Navigator.pop(context);
-                      _showAddReminder();
-                    },
-                    icon: const Icon(Icons.add_alarm, size: 20),
-                    label: const Text('ตั้งเตือน'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              if (reminders.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Center(
-                    child: Text(
-                      'ยังไม่มีรายการเตือน 📝\nกดปุ่ม "ตั้งเตือน" หรือบอกฟ้าว่ามีนัดอะไร~',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 15, color: Colors.grey),
-                    ),
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.all(16),
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  '📋 รายการเตือน',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                TextButton.icon(
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _showAddReminder();
+                  },
+                  icon: const Icon(Icons.add_alarm, size: 20),
+                  label: const Text('ตั้งเตือน'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (reminders.isEmpty)
+              const Padding(
+                padding: EdgeInsets.all(24),
+                child: Center(
+                  child: Text(
+                    'ยังไม่มีรายการเตือน 📝\nกดปุ่ม "ตั้งเตือน" หรือบอกฟ้าว่ามีนัดอะไร~',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 15, color: Colors.grey),
                   ),
                 ),
-              ...reminders.map((r) => ListTile(
-                    leading:
-                        const Icon(Icons.alarm, color: Color(0xFF6C9BCF)),
-                    title: Text(r['message'] ?? ''),
-                    subtitle: Text(r['remind_at'] ?? ''),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.check_circle_outline),
-                      onPressed: () async {
-                        await ApiService.completeReminder(r['id']);
-                        if (mounted) Navigator.pop(context);
-                      },
-                    ),
-                  )),
-            ],
-          );
-        },
-      );
-    } catch (_) {}
+              ),
+            ...reminders.map((r) => ListTile(
+                  leading:
+                      const Icon(Icons.alarm, color: Color(0xFF6C9BCF)),
+                  title: Text(r['message'] ?? ''),
+                  subtitle: Text(r['remind_at'] ?? ''),
+                  trailing: isLocal
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.check_circle_outline),
+                          onPressed: () async {
+                            await ApiService.completeReminder(r['id']);
+                            if (mounted) Navigator.pop(context);
+                          },
+                        ),
+                )),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _showAddReminder() async {
@@ -637,15 +678,9 @@ class _ChatScreenState extends State<ChatScreen> {
     }
 
     try {
-      // บันทึกลง backend
       final remindAt =
           '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
           '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-      await ApiService.addReminder(
-        userId: LocalStorage.userId,
-        message: message,
-        remindAt: remindAt,
-      );
 
       // ตั้ง local notification
       await NotificationService.scheduleReminder(
@@ -654,7 +689,20 @@ class _ChatScreenState extends State<ChatScreen> {
         body: message,
         scheduledTime: dt,
       );
-      debugPrint('Custom reminder scheduled: $message at $dt');
+
+      // เก็บลงเครื่อง (กัน backend reset)
+      await LocalStorage.saveReminder(message: message, remindAt: remindAt);
+
+      // บันทึกลง backend (ถ้า fail ไม่เป็นไร เพราะเก็บในเครื่องแล้ว)
+      try {
+        await ApiService.addReminder(
+          userId: LocalStorage.userId,
+          message: message,
+          remindAt: remindAt,
+        );
+      } catch (_) {}
+
+      debugPrint('Custom reminder scheduled + saved: $message at $dt');
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
