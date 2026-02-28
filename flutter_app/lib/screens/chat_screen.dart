@@ -1,4 +1,5 @@
 /// chat_screen.dart — หน้าแชทหลัก + Voice Input + Mood Picker + J.A.R.V.I.S. Mode
+import 'dart:math' show min;
 import 'package:flutter/material.dart';
 import '../models/message.dart';
 import '../services/api_service.dart';
@@ -535,13 +536,26 @@ class _ChatScreenState extends State<ChatScreen> {
                   '📋 รายการเตือน',
                   style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
-                TextButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _showAddReminder();
-                  },
-                  icon: const Icon(Icons.add_alarm, size: 20),
-                  label: const Text('ตั้งเตือน'),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      onPressed: () async {
+                        Navigator.pop(context);
+                        _runNotificationDiagnostic();
+                      },
+                      icon: const Icon(Icons.build, size: 20),
+                      tooltip: 'ทดสอบระบบ',
+                    ),
+                    TextButton.icon(
+                      onPressed: () {
+                        Navigator.pop(context);
+                        _showAddReminder();
+                      },
+                      icon: const Icon(Icons.add_alarm, size: 20),
+                      label: const Text('ตั้งเตือน'),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -575,6 +589,43 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         );
       },
+    );
+  }
+
+  Future<void> _runNotificationDiagnostic() async {
+    if (!mounted) return;
+    // แสดง loading
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    String result;
+    try {
+      result = await NotificationService.runDiagnostic();
+    } catch (e) {
+      result = 'Diagnostic crashed: $e';
+    }
+
+    if (!mounted) return;
+    Navigator.pop(context); // ปิด loading
+
+    // แสดงผลลัพธ์
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('ผลทดสอบระบบแจ้งเตือน'),
+        content: SingleChildScrollView(
+          child: Text(result, style: const TextStyle(fontFamily: 'monospace', fontSize: 13)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('ปิด'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -724,8 +775,12 @@ class _ChatScreenState extends State<ChatScreen> {
     } catch (e) {
       debugPrint('Failed to save reminder: $e');
       if (mounted) {
+        final errMsg = e.toString();
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('ตั้งเตือนไม่สำเร็จ ลองใหม่นะ')),
+          SnackBar(
+            content: Text('ตั้งเตือนไม่สำเร็จ: ${errMsg.substring(0, min(80, errMsg.length))}'),
+            duration: const Duration(seconds: 5),
+          ),
         );
       }
     }

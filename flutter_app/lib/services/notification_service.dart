@@ -306,4 +306,89 @@ class NotificationService {
   static Future<void> cancelAll() async {
     await _plugin.cancelAll();
   }
+
+  /// ทดสอบระบบแจ้งเตือนทีละ component — return ผลลัพธ์เป็น text
+  static Future<String> runDiagnostic() async {
+    final buf = StringBuffer();
+
+    // 1. Test timezone
+    try {
+      buf.writeln('1) tz.local = ${tz.local.name}');
+    } catch (e) {
+      buf.writeln('1) tz.local FAIL: $e');
+    }
+
+    // 2. Test TZDateTime creation
+    try {
+      final testTime = DateTime.now().add(const Duration(minutes: 5));
+      final tzTime = tz.TZDateTime.from(testTime, tz.local);
+      buf.writeln('2) TZDateTime.from() OK → $tzTime');
+    } catch (e) {
+      buf.writeln('2) TZDateTime.from() FAIL: $e');
+    }
+
+    const details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        'reminders_v2',
+        'Reminders',
+        channelDescription: 'การแจ้งเตือนจากฟ้า',
+        importance: Importance.max,
+        priority: Priority.max,
+        playSound: true,
+        enableVibration: true,
+      ),
+      iOS: DarwinNotificationDetails(
+        presentAlert: true,
+        presentSound: true,
+      ),
+    );
+
+    // 3. Test plugin.show() — immediate notification
+    try {
+      await _plugin.show(99990, 'Test', 'ทดสอบ show()', details);
+      buf.writeln('3) plugin.show() OK');
+    } catch (e) {
+      buf.writeln('3) plugin.show() FAIL: $e');
+    }
+
+    // 4. Test zonedSchedule exact
+    try {
+      final futureTime = tz.TZDateTime.now(tz.local).add(const Duration(minutes: 2));
+      await _plugin.zonedSchedule(
+        99991, 'Test Exact', 'ทดสอบ exact alarm', futureTime, details,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+      );
+      buf.writeln('4) zonedSchedule exact OK');
+      await _plugin.cancel(99991); // ยกเลิกทันทีหลังทดสอบ
+    } catch (e) {
+      buf.writeln('4) zonedSchedule exact FAIL: $e');
+    }
+
+    // 5. Test zonedSchedule inexact
+    try {
+      final futureTime = tz.TZDateTime.now(tz.local).add(const Duration(minutes: 2));
+      await _plugin.zonedSchedule(
+        99992, 'Test Inexact', 'ทดสอบ inexact alarm', futureTime, details,
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+      );
+      buf.writeln('5) zonedSchedule inexact OK');
+      await _plugin.cancel(99992);
+    } catch (e) {
+      buf.writeln('5) zonedSchedule inexact FAIL: $e');
+    }
+
+    // 6. Check pending notifications count
+    try {
+      final pending = await _plugin.pendingNotificationRequests();
+      buf.writeln('6) Pending notifications: ${pending.length}');
+    } catch (e) {
+      buf.writeln('6) pendingNotifications FAIL: $e');
+    }
+
+    return buf.toString();
+  }
 }

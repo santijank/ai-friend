@@ -1,5 +1,6 @@
 /// local_storage.dart — เก็บข้อมูลในเครื่องด้วย Hive
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import '../models/message.dart';
 
@@ -95,30 +96,54 @@ class LocalStorage {
 
   // === Reminders (เก็บในเครื่อง ไม่หายแม้ backend reset) ===
 
-  /// บันทึก reminder ลงเครื่อง
+  /// บันทึก reminder ลงเครื่อง (resilient — ไม่ throw)
   static Future<void> saveReminder({
     required String message,
     required String remindAt,
   }) async {
-    final reminders = getLocalReminders();
-    reminders.add({
+    final newEntry = {
       'message': message,
       'remind_at': remindAt,
       'created_at': DateTime.now().toIso8601String(),
-    });
-    await _reminderBox.put(
-      'list',
-      reminders.map((r) => jsonEncode(r)).toList(),
-    );
+    };
+    try {
+      final reminders = getLocalReminders();
+      reminders.add(newEntry);
+      await _reminderBox.put(
+        'list',
+        reminders.map((r) => jsonEncode(r)).toList(),
+      );
+    } catch (e) {
+      debugPrint('saveReminder error: $e — trying fresh save');
+      // ถ้าข้อมูลเก่าเสีย → clear แล้ว save เฉพาะตัวใหม่
+      try {
+        await _reminderBox.put('list', [jsonEncode(newEntry)]);
+      } catch (e2) {
+        debugPrint('saveReminder fresh save also failed: $e2');
+      }
+    }
   }
 
-  /// ดึง reminder ทั้งหมดจากเครื่อง
+  /// ดึง reminder ทั้งหมดจากเครื่อง (resilient — ไม่ throw, return [] ถ้ามีปัญหา)
   static List<Map<String, dynamic>> getLocalReminders() {
-    final raw = _reminderBox.get('list', defaultValue: <String>[]);
-    final list = (raw as List).cast<String>();
-    return list
-        .map((json) => jsonDecode(json) as Map<String, dynamic>)
-        .toList();
+    try {
+      final raw = _reminderBox.get('list', defaultValue: <dynamic>[]);
+      if (raw is! List) return [];
+      final result = <Map<String, dynamic>>[];
+      for (final item in raw) {
+        try {
+          if (item is String) {
+            result.add(jsonDecode(item) as Map<String, dynamic>);
+          }
+        } catch (_) {
+          // skip corrupted entries
+        }
+      }
+      return result;
+    } catch (e) {
+      debugPrint('getLocalReminders error: $e');
+      return [];
+    }
   }
 
   /// ดึงเฉพาะ reminder ที่ยังไม่หมดเวลา
@@ -126,9 +151,9 @@ class LocalStorage {
     final now = DateTime.now();
     return getLocalReminders().where((r) {
       try {
-        final dt = DateTime.parse(
-          (r['remind_at'] as String).replaceAll(' ', 'T'),
-        );
+        final remindAt = r['remind_at'];
+        if (remindAt is! String) return false;
+        final dt = DateTime.parse(remindAt.replaceAll(' ', 'T'));
         return dt.isAfter(now);
       } catch (_) {
         return false;
@@ -138,11 +163,15 @@ class LocalStorage {
 
   /// ลบ reminder ที่หมดเวลาแล้ว
   static Future<void> cleanExpiredReminders() async {
-    final pending = getPendingReminders();
-    await _reminderBox.put(
-      'list',
-      pending.map((r) => jsonEncode(r)).toList(),
-    );
+    try {
+      final pending = getPendingReminders();
+      await _reminderBox.put(
+        'list',
+        pending.map((r) => jsonEncode(r)).toList(),
+      );
+    } catch (e) {
+      debugPrint('cleanExpiredReminders error: $e');
+    }
   }
 
   // === Clear All ===
