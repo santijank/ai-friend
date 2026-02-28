@@ -69,29 +69,37 @@ class NotificationService {
   }
 
   static Future<bool> requestPermission() async {
-    final android = _plugin.resolvePlatformSpecificImplementation<
-        AndroidFlutterLocalNotificationsPlugin>();
-    if (android != null) {
-      // ขอ notification permission (Android 13+)
-      final granted = await android.requestNotificationsPermission();
-      debugPrint('Notification permission: $granted');
+    try {
+      final android = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      if (android != null) {
+        // ขอ notification permission (Android 13+)
+        final granted = await android.requestNotificationsPermission();
+        debugPrint('Notification permission: $granted');
 
-      // ขอ exact alarm permission (Android 12+)
-      final exactAlarm = await android.requestExactAlarmsPermission();
-      debugPrint('Exact alarm permission: $exactAlarm');
+        // ขอ exact alarm permission (Android 12+) — ไม่ fatal ถ้าไม่ได้
+        try {
+          final exactAlarm = await android.requestExactAlarmsPermission();
+          debugPrint('Exact alarm permission: $exactAlarm');
+        } catch (e) {
+          debugPrint('Exact alarm permission request failed (non-fatal): $e');
+        }
 
-      return granted ?? false;
-    }
+        return granted ?? false;
+      }
 
-    final ios = _plugin.resolvePlatformSpecificImplementation<
-        IOSFlutterLocalNotificationsPlugin>();
-    if (ios != null) {
-      final granted = await ios.requestPermissions(
-        alert: true,
-        badge: true,
-        sound: true,
-      );
-      return granted ?? false;
+      final ios = _plugin.resolvePlatformSpecificImplementation<
+          IOSFlutterLocalNotificationsPlugin>();
+      if (ios != null) {
+        final granted = await ios.requestPermissions(
+          alert: true,
+          badge: true,
+          sound: true,
+        );
+        return granted ?? false;
+      }
+    } catch (e) {
+      debugPrint('Permission request error: $e');
     }
     return false;
   }
@@ -139,30 +147,41 @@ class NotificationService {
     final tzTime = tz.TZDateTime.from(scheduledTime, tz.local);
     debugPrint('Scheduling notification: "$body" at $tzTime (tz.local=${tz.local.name})');
 
-    await _plugin.zonedSchedule(
-      id,
-      title,
-      body,
-      tzTime,
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'reminders_v2',
-          'Reminders',
-          channelDescription: 'การแจ้งเตือนจากฟ้า',
-          importance: Importance.max,
-          priority: Priority.max,
-          playSound: true,
-          enableVibration: true,
-        ),
-        iOS: DarwinNotificationDetails(
-          presentAlert: true,
-          presentSound: true,
-        ),
+    const details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        'reminders_v2',
+        'Reminders',
+        channelDescription: 'การแจ้งเตือนจากฟ้า',
+        importance: Importance.max,
+        priority: Priority.max,
+        playSound: true,
+        enableVibration: true,
       ),
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      uiLocalNotificationDateInterpretation:
-          UILocalNotificationDateInterpretation.absoluteTime,
+      iOS: DarwinNotificationDetails(
+        presentAlert: true,
+        presentSound: true,
+      ),
     );
+
+    // ลอง exact alarm ก่อน → ถ้า permission ไม่ได้ fallback เป็น inexact
+    try {
+      await _plugin.zonedSchedule(
+        id, title, body, tzTime, details,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+      );
+      debugPrint('Scheduled with exactAllowWhileIdle');
+    } catch (e) {
+      debugPrint('Exact alarm failed ($e), falling back to inexact');
+      await _plugin.zonedSchedule(
+        id, title, body, tzTime, details,
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+      );
+      debugPrint('Scheduled with inexactAllowWhileIdle (fallback)');
+    }
   }
 
   /// ตั้งเตือนทุกวัน (เช่น ทักทายตอนเช้า) — พร้อมเสียง
@@ -179,31 +198,40 @@ class NotificationService {
       scheduled = scheduled.add(const Duration(days: 1));
     }
 
-    await _plugin.zonedSchedule(
-      id,
-      title,
-      body,
-      scheduled,
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'daily_v2',
-          'Daily Reminders',
-          channelDescription: 'ทักทายตอนเช้าและสรุปตอนค่ำ',
-          importance: Importance.max,
-          priority: Priority.max,
-          playSound: true,
-          enableVibration: true,
-        ),
-        iOS: DarwinNotificationDetails(
-          presentAlert: true,
-          presentSound: true,
-        ),
+    const details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        'daily_v2',
+        'Daily Reminders',
+        channelDescription: 'ทักทายตอนเช้าและสรุปตอนค่ำ',
+        importance: Importance.max,
+        priority: Priority.max,
+        playSound: true,
+        enableVibration: true,
       ),
-      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-      uiLocalNotificationDateInterpretation:
-          UILocalNotificationDateInterpretation.absoluteTime,
-      matchDateTimeComponents: DateTimeComponents.time,
+      iOS: DarwinNotificationDetails(
+        presentAlert: true,
+        presentSound: true,
+      ),
     );
+
+    try {
+      await _plugin.zonedSchedule(
+        id, title, body, scheduled, details,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+        matchDateTimeComponents: DateTimeComponents.time,
+      );
+    } catch (e) {
+      debugPrint('Daily exact alarm failed ($e), falling back to inexact');
+      await _plugin.zonedSchedule(
+        id, title, body, scheduled, details,
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+        matchDateTimeComponents: DateTimeComponents.time,
+      );
+    }
   }
 
   /// ยกเลิก notification
