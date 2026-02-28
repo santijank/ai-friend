@@ -180,7 +180,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
         if (reminderTime != null && reminderMessage != null) {
           try {
-            final dt = DateTime.parse(reminderTime);
+            // Backend ส่งเวลาเป็น Bangkok time (naive) เช่น "2025-03-01 14:00"
+            final dt = DateTime.parse(reminderTime.replaceAll(' ', 'T'));
             if (dt.isAfter(DateTime.now())) {
               await NotificationService.scheduleReminder(
                 id: dt.millisecondsSinceEpoch ~/ 1000,
@@ -476,28 +477,39 @@ class _ChatScreenState extends State<ChatScreen> {
           borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
         ),
         builder: (context) {
-          if (reminders.isEmpty) {
-            return const Padding(
-              padding: EdgeInsets.all(32),
-              child: Center(
-                child: Text(
-                  'ยังไม่มีรายการเตือน 📝\nลองบอกฟ้าว่ามีนัดอะไรสิ~',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 16, color: Colors.grey),
-                ),
-              ),
-            );
-          }
-
           return ListView(
             shrinkWrap: true,
             padding: const EdgeInsets.all(16),
             children: [
-              const Text(
-                '📋 รายการเตือน',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    '📋 รายการเตือน',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      _showAddReminder();
+                    },
+                    icon: const Icon(Icons.add_alarm, size: 20),
+                    label: const Text('ตั้งเตือน'),
+                  ),
+                ],
               ),
               const SizedBox(height: 12),
+              if (reminders.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(
+                    child: Text(
+                      'ยังไม่มีรายการเตือน 📝\nกดปุ่ม "ตั้งเตือน" หรือบอกฟ้าว่ามีนัดอะไร~',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 15, color: Colors.grey),
+                    ),
+                  ),
+                ),
               ...reminders.map((r) => ListTile(
                     leading:
                         const Icon(Icons.alarm, color: Color(0xFF6C9BCF)),
@@ -516,6 +528,147 @@ class _ChatScreenState extends State<ChatScreen> {
         },
       );
     } catch (_) {}
+  }
+
+  Future<void> _showAddReminder() async {
+    final messageController = TextEditingController();
+    DateTime? selectedDate;
+    TimeOfDay? selectedTime;
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              title: const Text('ตั้งเตือนใหม่'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: messageController,
+                      decoration: const InputDecoration(
+                        labelText: 'เรื่องที่ต้องทำ',
+                        hintText: 'เช่น ไปหาหมอ, ประชุม',
+                        border: OutlineInputBorder(),
+                      ),
+                      maxLines: 2,
+                    ),
+                    const SizedBox(height: 16),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.calendar_today),
+                      title: Text(selectedDate != null
+                          ? '${selectedDate!.day}/${selectedDate!.month}/${selectedDate!.year}'
+                          : 'เลือกวันที่'),
+                      onTap: () async {
+                        final picked = await showDatePicker(
+                          context: ctx,
+                          initialDate: DateTime.now(),
+                          firstDate: DateTime.now(),
+                          lastDate: DateTime.now().add(const Duration(days: 365)),
+                        );
+                        if (picked != null) {
+                          setDialogState(() => selectedDate = picked);
+                        }
+                      },
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.access_time),
+                      title: Text(selectedTime != null
+                          ? '${selectedTime!.hour.toString().padLeft(2, '0')}:${selectedTime!.minute.toString().padLeft(2, '0')}'
+                          : 'เลือกเวลา'),
+                      onTap: () async {
+                        final picked = await showTimePicker(
+                          context: ctx,
+                          initialTime: TimeOfDay.now(),
+                        );
+                        if (picked != null) {
+                          setDialogState(() => selectedTime = picked);
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('ยกเลิก'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    if (messageController.text.trim().isEmpty ||
+                        selectedDate == null ||
+                        selectedTime == null) {
+                      return;
+                    }
+                    Navigator.pop(ctx, {
+                      'message': messageController.text.trim(),
+                      'date': selectedDate,
+                      'time': selectedTime,
+                    });
+                  },
+                  child: const Text('ตั้งเตือน'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null) return;
+
+    final date = result['date'] as DateTime;
+    final time = result['time'] as TimeOfDay;
+    final message = result['message'] as String;
+    final dt = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+
+    if (dt.isBefore(DateTime.now())) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('เวลาต้องเป็นอนาคตนะ~')),
+        );
+      }
+      return;
+    }
+
+    try {
+      // บันทึกลง backend
+      final remindAt =
+          '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')} '
+          '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+      await ApiService.addReminder(
+        userId: LocalStorage.userId,
+        message: message,
+        remindAt: remindAt,
+      );
+
+      // ตั้ง local notification
+      await NotificationService.scheduleReminder(
+        id: dt.millisecondsSinceEpoch ~/ 1000,
+        title: '🤖 ฟ้าเตือน~',
+        body: message,
+        scheduledTime: dt,
+      );
+      debugPrint('Custom reminder scheduled: $message at $dt');
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('ตั้งเตือน "$message" เรียบร้อย!')),
+        );
+      }
+    } catch (e) {
+      debugPrint('Failed to add reminder: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('ตั้งเตือนไม่สำเร็จ ลองใหม่นะ')),
+        );
+      }
+    }
   }
 
   @override

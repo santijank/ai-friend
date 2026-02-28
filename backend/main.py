@@ -8,6 +8,7 @@ import json
 import re
 import uuid
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
@@ -216,7 +217,7 @@ async def chat(req: ChatRequest):
 
     try:
         # ========== รวบรวม Full Context (ข้อมูลทั้งหมดของผู้ใช้) ==========
-        today_str = date.today().isoformat()
+        today_str = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d")
         mood_history = db.get_mood_history(req.user_id, days=7)
         routines = db.get_routines(req.user_id)
         pending_reminders = db.get_pending_reminders(req.user_id)
@@ -324,6 +325,23 @@ async def get_memory(user_id: str):
     return memory
 
 
+class AddReminderRequest(BaseModel):
+    user_id: str
+    message: str
+    remind_at: str
+
+
+@app.post("/reminders")
+async def add_reminder(req: AddReminderRequest):
+    """เพิ่ม reminder ใหม่ (จาก UI โดยตรง)"""
+    user = db.get_user(req.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    db.add_reminder(req.user_id, req.message, req.remind_at)
+    return {"status": "ok", "message": "Reminder added"}
+
+
 @app.post("/reminders/{reminder_id}/done")
 async def complete_reminder(reminder_id: int):
     """ทำเครื่องหมาย reminder ว่าเสร็จแล้ว"""
@@ -337,7 +355,7 @@ async def complete_reminder(reminder_id: int):
 async def health():
     return {
         "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(ZoneInfo("Asia/Bangkok")).isoformat(),
     }
 
 
@@ -438,7 +456,7 @@ async def get_routines(user_id: str):
         raise HTTPException(status_code=404, detail="User not found")
 
     routines = db.get_routines(user_id)
-    today = date.today().isoformat()
+    today = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d")
     result = []
     for r in routines:
         done_today = db.is_routine_done_today(r["id"], today)
@@ -466,7 +484,7 @@ async def create_routine(req: RoutineRequest):
 @app.post("/routines/{routine_id}/complete")
 async def complete_routine(routine_id: int):
     """เช็คกิจวัตรว่าทำแล้ววันนี้"""
-    today = date.today().isoformat()
+    today = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d")
     points = db.complete_routine(routine_id, today)
     return {"status": "ok", "points_earned": points}
 
@@ -532,7 +550,7 @@ async def night_wrap(user_id: str):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    today = date.today().isoformat()
+    today = datetime.now(ZoneInfo("Asia/Bangkok")).strftime("%Y-%m-%d")
     routines = db.get_routines(user_id)
     done_count = sum(1 for r in routines if db.is_routine_done_today(r["id"], today))
     moods = db.get_mood_history(user_id, 1)

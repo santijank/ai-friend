@@ -117,6 +117,27 @@ class ApiService {
     throw Exception('Get reminders failed: ${response.statusCode}');
   }
 
+  /// เพิ่ม reminder ใหม่
+  static Future<void> addReminder({
+    required String userId,
+    required String message,
+    required String remindAt,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$_baseUrl/reminders'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'user_id': userId,
+        'message': message,
+        'remind_at': remindAt,
+      }),
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception('Add reminder failed: ${response.statusCode}');
+    }
+  }
+
   /// ทำเครื่องหมาย reminder ว่าเสร็จ
   static Future<void> completeReminder(int reminderId) async {
     await http.post(Uri.parse('$_baseUrl/reminders/$reminderId/done'));

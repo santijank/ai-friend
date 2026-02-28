@@ -10,12 +10,15 @@ import re
 import random
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 
 import database as db
 
 logger = logging.getLogger(__name__)
+
+BKK = ZoneInfo("Asia/Bangkok")  # UTC+7
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 MODEL = "claude-haiku-4-5-20251001"
@@ -36,7 +39,7 @@ def _build_live_context(user_context: dict) -> str:
         return ""
 
     parts = []
-    now = datetime.now()
+    now = datetime.now(BKK)
 
     # 1. ตารางเวลา
     wake = user_context.get("wake_time", "07:00")
@@ -123,7 +126,7 @@ def build_system_prompt(
     memory_text = _summarize_memory(memory)
     live_context = _build_live_context(user_context) if user_context else ""
 
-    today = datetime.now()
+    today = datetime.now(BKK)
     day_names = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
     day_name = day_names[today.weekday()]
     time_str = today.strftime("%H:%M")
@@ -325,7 +328,7 @@ def try_local_reply(
 
                 # Context-aware: อรุณสวัสดิ์ + มีนัดวันนี้
                 if category == "goodmorning" and user_context:
-                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    today_str = datetime.now(BKK).strftime("%Y-%m-%d")
                     today_rem = [
                         r["message"] for r in user_context.get("pending_reminders", [])
                         if r.get("remind_at", "").startswith(today_str)

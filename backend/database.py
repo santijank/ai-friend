@@ -7,6 +7,9 @@ import sqlite3
 import json
 from datetime import datetime, date, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
+
+BKK = ZoneInfo("Asia/Bangkok")
 
 DB_PATH = Path("ai_friend.db")
 
@@ -61,7 +64,7 @@ def init_db():
             user_id TEXT NOT NULL,
             score INTEGER NOT NULL,
             note TEXT DEFAULT '',
-            created_at DATE DEFAULT (date('now')),
+            created_at DATE,
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
 
@@ -149,7 +152,7 @@ def update_user_memory(user_id: str, memory: dict):
     conn = get_db()
     conn.execute(
         "UPDATE users SET memory = ?, last_active = ? WHERE id = ?",
-        (json.dumps(memory, ensure_ascii=False), datetime.now().isoformat(), user_id)
+        (json.dumps(memory, ensure_ascii=False), datetime.now(BKK).isoformat(), user_id)
     )
     conn.commit()
     conn.close()
@@ -228,7 +231,7 @@ def mark_reminder_done(reminder_id: int):
 def save_mood(user_id: str, score: int, note: str = ""):
     """บันทึกอารมณ์ (แทนที่ค่าเดิมถ้าบันทึกวันเดียวกัน)"""
     conn = get_db()
-    today = date.today().isoformat()
+    today = datetime.now(BKK).date().isoformat()
     existing = conn.execute(
         "SELECT id FROM moods WHERE user_id = ? AND created_at = ?",
         (user_id, today)
@@ -251,7 +254,7 @@ def save_mood(user_id: str, score: int, note: str = ""):
 def get_mood_history(user_id: str, days: int = 7) -> list[dict]:
     """ดึงประวัติอารมณ์ย้อนหลัง"""
     conn = get_db()
-    since = (date.today() - timedelta(days=days)).isoformat()
+    since = (datetime.now(BKK).date() - timedelta(days=days)).isoformat()
     rows = conn.execute(
         "SELECT score, note, created_at FROM moods WHERE user_id = ? AND created_at >= ? ORDER BY created_at",
         (user_id, since)
@@ -342,7 +345,7 @@ def get_user_stats(user_id: str) -> dict:
 
     # Streak: นับวันต่อเนื่องที่ทำกิจวัตรอย่างน้อย 1 อย่าง
     streak = 0
-    check_date = date.today()
+    check_date = datetime.now(BKK).date()
     while True:
         date_str = check_date.isoformat()
         row = conn.execute(
@@ -377,7 +380,7 @@ def save_alert(
 ) -> bool:
     """บันทึก alert ใหม่ — return True ถ้า insert สำเร็จ, False ถ้าซ้ำ"""
     conn = get_db()
-    expires_at = (datetime.now() + timedelta(hours=expires_hours)).isoformat()
+    expires_at = (datetime.now(BKK) + timedelta(hours=expires_hours)).isoformat()
     try:
         cursor = conn.execute(
             """INSERT OR IGNORE INTO alerts
@@ -396,7 +399,7 @@ def save_alert(
 def get_active_alerts(severity: str | None = None, limit: int = 20) -> list[dict]:
     """ดึง alerts ที่ยังไม่หมดอายุ เรียงจากใหม่สุด"""
     conn = get_db()
-    now = datetime.now().isoformat()
+    now = datetime.now(BKK).isoformat()
     if severity:
         rows = conn.execute(
             """SELECT * FROM alerts
@@ -421,8 +424,8 @@ def get_active_alerts(severity: str | None = None, limit: int = 20) -> list[dict
 def get_latest_critical_alerts(hours_back: int = 6) -> list[dict]:
     """ดึงเฉพาะ critical alerts ใน X ชั่วโมงที่ผ่านมา — ใช้ใน chat context"""
     conn = get_db()
-    since = (datetime.now() - timedelta(hours=hours_back)).isoformat()
-    now = datetime.now().isoformat()
+    since = (datetime.now(BKK) - timedelta(hours=hours_back)).isoformat()
+    now = datetime.now(BKK).isoformat()
     rows = conn.execute(
         """SELECT * FROM alerts
            WHERE severity = 'critical'
@@ -439,7 +442,7 @@ def get_latest_critical_alerts(hours_back: int = 6) -> list[dict]:
 def expire_old_alerts():
     """Mark expired alerts เป็น is_active=0"""
     conn = get_db()
-    now = datetime.now().isoformat()
+    now = datetime.now(BKK).isoformat()
     conn.execute(
         "UPDATE alerts SET is_active = 0 WHERE expires_at < ? AND is_active = 1",
         (now,),
