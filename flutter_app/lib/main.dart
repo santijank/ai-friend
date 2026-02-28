@@ -1,7 +1,9 @@
 /// main.dart — จุดเริ่มต้นแอป ฟ้า AI Friend
 import 'package:flutter/material.dart';
+import 'config.dart';
 import 'services/local_storage.dart';
 import 'services/notification_service.dart';
+import 'services/background_alert_service.dart';
 import 'services/tts_service.dart';
 import 'services/stt_service.dart';
 import 'services/theme_service.dart';
@@ -16,6 +18,9 @@ void main() async {
   await NotificationService.init();
   await TtsService.init();
   await SttService.init();
+
+  // เริ่ม background alert polling (แจ้งเตือนแม้ปิดแอป)
+  await BackgroundAlertService.initialize(AppConfig.apiBaseUrl);
 
   runApp(const AIFriendApp());
 }

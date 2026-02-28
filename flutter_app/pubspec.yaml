@@ -19,6 +19,8 @@ dependencies:
   # Notifications
   flutter_local_notifications: ^17.2.0
   timezone: ^0.9.4
+  workmanager: ^0.5.2
+  shared_preferences: ^2.2.0
 
   # Voice
   flutter_tts: ^4.0.2

@@ -3,8 +3,10 @@ import 'package:flutter/material.dart';
 import '../services/local_storage.dart';
 import '../services/api_service.dart';
 import '../services/notification_service.dart';
+import '../services/background_alert_service.dart';
 import '../services/tts_service.dart';
 import '../services/auth_service.dart';
+import '../config.dart';
 import 'mood_history_screen.dart';
 import 'onboarding_screen.dart';
 
@@ -23,6 +25,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late bool _nightNotif;
   late bool _autoSpeak;
   late bool _darkMode;
+  late bool _criticalAlerts;
 
   @override
   void initState() {
@@ -34,6 +37,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _nightNotif = LocalStorage.nightNotification;
     _autoSpeak = LocalStorage.autoSpeak;
     _darkMode = LocalStorage.darkMode;
+    _criticalAlerts = LocalStorage.criticalAlertNotification;
   }
 
   final _personalityNames = {
@@ -231,6 +235,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 }
               },
             ),
+            SwitchListTile(
+              title: const Text('แจ้งเตือนภัยพิบัติ'),
+              subtitle: const Text('แผ่นดินไหว ภัยธรรมชาติ ข่าวด่วน (มีเสียง)'),
+              value: _criticalAlerts,
+              onChanged: (val) async {
+                setState(() => _criticalAlerts = val);
+                await LocalStorage.saveSetting('criticalAlertNotification', val);
+                if (val) {
+                  await BackgroundAlertService.initialize(AppConfig.apiBaseUrl);
+                } else {
+                  await BackgroundAlertService.cancel();
+                }
+              },
+            ),
 
             const Divider(height: 32),
 
@@ -280,7 +298,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 32),
             const Center(
               child: Text(
-                'ฟ้า AI Friend v1.0.0',
+                'ฟ้า AI Friend v${AppConfig.appVersion}',
                 style: TextStyle(color: Colors.grey, fontSize: 12),
               ),
             ),

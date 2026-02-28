@@ -73,6 +73,8 @@ class LocalStorage {
       _settingsBox.get('morningNotification', defaultValue: true);
   static bool get nightNotification =>
       _settingsBox.get('nightNotification', defaultValue: true);
+  static bool get criticalAlertNotification =>
+      _settingsBox.get('criticalAlertNotification', defaultValue: true);
 
   static Future<void> saveSetting(String key, dynamic value) async {
     await _settingsBox.put(key, value);
