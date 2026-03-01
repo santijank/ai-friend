@@ -198,11 +198,21 @@ class ApiService {
     throw Exception('Get mood history failed: ${response.statusCode}');
   }
 
-  /// ดึง routines
+  /// ดึง routines (auto-reregister ถ้า 404)
   static Future<List<Map<String, dynamic>>> getRoutines(String userId) async {
-    final response = await http.get(
+    var response = await http.get(
       Uri.parse('$_baseUrl/routines/$userId'),
     );
+
+    if (response.statusCode == 404) {
+      debugPrint('Routines 404 — auto-reregister...');
+      final ok = await _autoReRegister();
+      if (ok) {
+        response = await http.get(
+          Uri.parse('$_baseUrl/routines/${LocalStorage.userId}'),
+        );
+      }
+    }
 
     if (response.statusCode == 200) {
       final list = jsonDecode(response.body) as List;
@@ -211,14 +221,14 @@ class ApiService {
     throw Exception('Get routines failed: ${response.statusCode}');
   }
 
-  /// สร้าง routine ใหม่
+  /// สร้าง routine ใหม่ (auto-reregister ถ้า 404)
   static Future<Map<String, dynamic>> createRoutine({
     required String userId,
     required String title,
     String time = '',
     int points = 5,
   }) async {
-    final response = await http.post(
+    var response = await http.post(
       Uri.parse('$_baseUrl/routines'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
@@ -229,6 +239,23 @@ class ApiService {
       }),
     );
 
+    if (response.statusCode == 404) {
+      debugPrint('Create routine 404 — auto-reregister...');
+      final ok = await _autoReRegister();
+      if (ok) {
+        response = await http.post(
+          Uri.parse('$_baseUrl/routines'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'user_id': LocalStorage.userId,
+            'title': title,
+            'time': time,
+            'points': points,
+          }),
+        );
+      }
+    }
+
     if (response.statusCode == 200) {
       return jsonDecode(response.body);
     }
@@ -237,12 +264,22 @@ class ApiService {
 
   /// เช็คกิจวัตร (done)
   static Future<void> completeRoutine(int routineId) async {
-    await http.post(Uri.parse('$_baseUrl/routines/$routineId/complete'));
+    final response = await http.post(
+      Uri.parse('$_baseUrl/routines/$routineId/complete'),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Complete routine failed: ${response.statusCode}');
+    }
   }
 
   /// ลบ routine
   static Future<void> deleteRoutine(int routineId) async {
-    await http.delete(Uri.parse('$_baseUrl/routines/$routineId'));
+    final response = await http.delete(
+      Uri.parse('$_baseUrl/routines/$routineId'),
+    );
+    if (response.statusCode != 200) {
+      throw Exception('Delete routine failed: ${response.statusCode}');
+    }
   }
 
   /// ดึงสถิติผู้ใช้ (streak, points)

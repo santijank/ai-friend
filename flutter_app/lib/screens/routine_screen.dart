@@ -43,16 +43,38 @@ class _RoutineScreenState extends State<RoutineScreen> {
           _isLoading = false;
         });
       }
-    } catch (_) {
-      if (mounted) setState(() => _isLoading = false);
+    } catch (e) {
+      debugPrint('Load routines error: $e');
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showError('โหลดกิจวัตรไม่สำเร็จ ลองดึงลงเพื่อรีเฟรช');
+      }
     }
+  }
+
+  void _showError(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: Colors.red),
+    );
+  }
+
+  void _showSuccess(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: Colors.green),
+    );
   }
 
   Future<void> _completeRoutine(Routine routine) async {
     try {
       await ApiService.completeRoutine(routine.id);
       await _loadData();
-    } catch (_) {}
+      _showSuccess('เช็ค "${routine.title}" สำเร็จ!');
+    } catch (e) {
+      debugPrint('Complete routine error: $e');
+      _showError('เช็คกิจวัตรไม่สำเร็จ: $e');
+    }
   }
 
   Future<void> _addRoutine() async {
@@ -104,7 +126,11 @@ class _RoutineScreenState extends State<RoutineScreen> {
           time: timeController.text.trim(),
         );
         await _loadData();
-      } catch (_) {}
+        _showSuccess('เพิ่ม "${titleController.text.trim()}" เรียบร้อย!');
+      } catch (e) {
+        debugPrint('Add routine error: $e');
+        _showError('เพิ่มกิจวัตรไม่สำเร็จ: $e');
+      }
     }
 
     titleController.dispose();
@@ -135,7 +161,11 @@ class _RoutineScreenState extends State<RoutineScreen> {
       try {
         await ApiService.deleteRoutine(routine.id);
         await _loadData();
-      } catch (_) {}
+        _showSuccess('ลบ "${routine.title}" แล้ว');
+      } catch (e) {
+        debugPrint('Delete routine error: $e');
+        _showError('ลบกิจวัตรไม่สำเร็จ: $e');
+      }
     }
   }
 
