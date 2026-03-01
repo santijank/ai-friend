@@ -213,18 +213,54 @@ class _ChatScreenState extends State<ChatScreen> {
       final reminderTime = response['reminder_time'] as String?;
       final reminderMessage = response['reminder_message'] as String?;
 
+      // ถ้ามี reminder → เก็บลงเครื่องก่อน แล้วค่อยตั้ง notification
+      String scheduleResult = '';
+      if (hasReminder) {
+        if (reminderTime != null && reminderMessage != null) {
+          try {
+            final dt = DateTime.parse(reminderTime.replaceAll(' ', 'T'));
+            if (dt.isAfter(DateTime.now())) {
+              await LocalStorage.saveReminder(
+                message: reminderMessage,
+                remindAt: reminderTime,
+              );
+              await NotificationService.scheduleReminder(
+                id: dt.millisecondsSinceEpoch ~/ 1000,
+                title: '🤖 ฟ้าเตือน~',
+                body: reminderMessage,
+                scheduledTime: dt,
+              );
+              scheduleResult = 'SAVE+SCHEDULE OK ✅ ($dt)';
+              debugPrint('Reminder saved + scheduled: $reminderMessage at $dt');
+            } else {
+              scheduleResult = 'SKIPPED: time is in past ⚠️ ($dt)';
+            }
+          } catch (e) {
+            scheduleResult = 'FAIL ❌: $e';
+            debugPrint('Failed to handle reminder: $e');
+          }
+        } else {
+          scheduleResult = 'SKIPPED: time=$reminderTime msg=$reminderMessage';
+        }
+      }
+
       // แสดง debug dialog เสมอ (ชั่วคราว) เพื่อ debug
       if (mounted && debugRaw != null) {
         showDialog(
           context: context,
           builder: (ctx) => AlertDialog(
             title: const Text('🔔 Debug Reminder'),
-            content: Text(
-              'has_reminder: $hasReminder\n'
-              'debug_raw: $debugRaw\n'
-              'reminder_time: $reminderTime\n'
-              'reminder_message: $reminderMessage\n'
-              'app_version: 1.4.1-debug',
+            content: SingleChildScrollView(
+              child: Text(
+                'app_version: 1.4.1\n'
+                '─── API Response ───\n'
+                'has_reminder: $hasReminder\n'
+                'debug_raw: $debugRaw\n'
+                'reminder_time: $reminderTime\n'
+                'reminder_msg: $reminderMessage\n'
+                '─── Schedule Result ───\n'
+                '${scheduleResult.isEmpty ? "N/A (no reminder)" : scheduleResult}',
+              ),
             ),
             actions: [
               TextButton(
@@ -234,52 +270,6 @@ class _ChatScreenState extends State<ChatScreen> {
             ],
           ),
         );
-      }
-
-      // ถ้ามี reminder → เก็บลงเครื่องก่อน แล้วค่อยตั้ง notification
-      if (hasReminder) {
-        if (reminderTime != null && reminderMessage != null) {
-          try {
-            // Backend ส่งเวลาเป็น Bangkok time (naive) เช่น "2025-03-01 14:00"
-            final dt = DateTime.parse(reminderTime.replaceAll(' ', 'T'));
-            if (dt.isAfter(DateTime.now())) {
-              // 1. เก็บลงเครื่องก่อน (กัน backend reset) — ควรสำเร็จเสมอ
-              await LocalStorage.saveReminder(
-                message: reminderMessage,
-                remindAt: reminderTime,
-              );
-              // 2. ตั้ง notification (อาจ fail ได้ — ไม่ fatal เพราะ save แล้ว)
-              await NotificationService.scheduleReminder(
-                id: dt.millisecondsSinceEpoch ~/ 1000,
-                title: '🤖 ฟ้าเตือน~',
-                body: reminderMessage,
-                scheduledTime: dt,
-              );
-              debugPrint('Reminder saved + scheduled: $reminderMessage at $dt');
-
-              // แจ้งผู้ใช้ว่าตั้งเตือนสำเร็จ
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text('ตั้งเตือน "$reminderMessage" เรียบร้อย!'),
-                    backgroundColor: Colors.green,
-                    duration: const Duration(seconds: 3),
-                  ),
-                );
-              }
-            }
-          } catch (e) {
-            debugPrint('Failed to handle reminder: $e');
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text('ตั้งเตือน fail: $e'),
-                  backgroundColor: Colors.red,
-                ),
-              );
-            }
-          }
-        }
       }
 
       return reply;

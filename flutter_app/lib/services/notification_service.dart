@@ -385,8 +385,39 @@ class NotificationService {
     try {
       final pending = await _plugin.pendingNotificationRequests();
       buf.writeln('6) Pending notifications: ${pending.length}');
+      for (final p in pending) {
+        buf.writeln('   - id=${p.id} "${p.title}"');
+      }
     } catch (e) {
       buf.writeln('6) pendingNotifications FAIL: $e');
+    }
+
+    // 7. Check notification permission
+    try {
+      final android = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      if (android != null) {
+        final enabled = await android.areNotificationsEnabled();
+        buf.writeln('7) Notification permission: ${enabled == true ? "GRANTED ✅" : "DENIED ❌"}');
+      } else {
+        buf.writeln('7) Notification permission: N/A (not Android)');
+      }
+    } catch (e) {
+      buf.writeln('7) Notification permission check FAIL: $e');
+    }
+
+    // 8. Check exact alarm permission
+    try {
+      final android = _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+      if (android != null) {
+        final canExact = await android.canScheduleExactNotifications();
+        buf.writeln('8) Exact alarm permission: ${canExact == true ? "GRANTED ✅" : "DENIED ❌"}');
+      } else {
+        buf.writeln('8) Exact alarm permission: N/A (not Android)');
+      }
+    } catch (e) {
+      buf.writeln('8) Exact alarm check FAIL: $e');
     }
 
     return buf.toString();
@@ -411,6 +442,10 @@ class NotificationService {
     );
 
     try {
+      // นับ pending ก่อน schedule
+      final beforePending = await _plugin.pendingNotificationRequests();
+      final beforeCount = beforePending.length;
+
       final fireAt = tz.TZDateTime.now(tz.local).add(const Duration(seconds: 30));
       await _plugin.zonedSchedule(
         88888,
@@ -422,7 +457,15 @@ class NotificationService {
         uiLocalNotificationDateInterpretation:
             UILocalNotificationDateInterpretation.absoluteTime,
       );
-      return 'ตั้งเวลาแล้ว! จะมี notification ใน 30 วินาที (${fireAt.hour}:${fireAt.minute.toString().padLeft(2, '0')}:${fireAt.second.toString().padLeft(2, '0')})';
+
+      // นับ pending หลัง schedule
+      final afterPending = await _plugin.pendingNotificationRequests();
+      final afterCount = afterPending.length;
+
+      final timeStr = '${fireAt.hour}:${fireAt.minute.toString().padLeft(2, '0')}:${fireAt.second.toString().padLeft(2, '0')}';
+      return 'ตั้งเวลาแล้ว! จะมี notification ใน 30 วินาที ($timeStr)\n'
+          'Pending: $beforeCount → $afterCount ${afterCount > beforeCount ? "✅" : "⚠️ ไม่เพิ่ม!"}\n'
+          'ถ้าไม่มี notification ใน 30 วิ = Android block (battery/doze)';
     } catch (e) {
       return 'ตั้งเวลาไม่ได้: $e';
     }
