@@ -547,6 +547,14 @@ class _ChatScreenState extends State<ChatScreen> {
                       icon: const Icon(Icons.build, size: 20),
                       tooltip: 'ทดสอบระบบ',
                     ),
+                    IconButton(
+                      onPressed: () async {
+                        Navigator.pop(context);
+                        _scheduleTestNotification();
+                      },
+                      icon: const Icon(Icons.timer, size: 20),
+                      tooltip: 'ทดสอบ 30 วินาที',
+                    ),
                     TextButton.icon(
                       onPressed: () {
                         Navigator.pop(context);
@@ -589,6 +597,20 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         );
       },
+    );
+  }
+
+  Future<void> _scheduleTestNotification() async {
+    if (!mounted) return;
+    String result;
+    try {
+      result = await NotificationService.scheduleTestNotification();
+    } catch (e) {
+      result = 'Error: $e';
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(result), duration: const Duration(seconds: 5)),
     );
   }
 

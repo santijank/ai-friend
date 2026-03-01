@@ -391,4 +391,40 @@ class NotificationService {
 
     return buf.toString();
   }
+
+  /// ตั้งเตือนทดสอบจริง 30 วินาที (ไม่ cancel — ต้องมา notification จริง)
+  static Future<String> scheduleTestNotification() async {
+    const details = NotificationDetails(
+      android: AndroidNotificationDetails(
+        'reminders_v2',
+        'Reminders',
+        channelDescription: 'การแจ้งเตือนจากฟ้า',
+        importance: Importance.max,
+        priority: Priority.max,
+        playSound: true,
+        enableVibration: true,
+      ),
+      iOS: DarwinNotificationDetails(
+        presentAlert: true,
+        presentSound: true,
+      ),
+    );
+
+    try {
+      final fireAt = tz.TZDateTime.now(tz.local).add(const Duration(seconds: 30));
+      await _plugin.zonedSchedule(
+        88888,
+        '🔔 ทดสอบสำเร็จ!',
+        'ถ้าเห็นข้อความนี้ แปลว่าระบบแจ้งเตือนทำงานแล้ว!',
+        fireAt,
+        details,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+      );
+      return 'ตั้งเวลาแล้ว! จะมี notification ใน 30 วินาที (${fireAt.hour}:${fireAt.minute.toString().padLeft(2, '0')}:${fireAt.second.toString().padLeft(2, '0')})';
+    } catch (e) {
+      return 'ตั้งเวลาไม่ได้: $e';
+    }
+  }
 }
