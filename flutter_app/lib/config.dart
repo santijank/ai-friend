@@ -14,7 +14,7 @@ class AppConfig {
 
   // === App Info ===
   static const String appName = 'ฟ้า AI Friend';
-  static const String appVersion = '1.4.0';
+  static const String appVersion = '1.4.1';
 
   // === Theme Colors ===
   static const int primaryColorValue = 0xFF6C9BCF;

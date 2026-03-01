@@ -207,17 +207,37 @@ class _ChatScreenState extends State<ChatScreen> {
         await TtsService.speak(reply);
       }
 
-      // Debug: แสดง raw reminder จาก AI (ถ้ามี)
+      // === DEBUG: แสดงข้อมูล reminder จาก API ===
       final debugRaw = response['debug_reminder_raw'] as String?;
-      if (debugRaw != null) {
-        debugPrint('🔔 AI raw reminder: $debugRaw');
+      final hasReminder = response['has_reminder'] == true;
+      final reminderTime = response['reminder_time'] as String?;
+      final reminderMessage = response['reminder_message'] as String?;
+
+      // แสดง debug dialog เสมอ (ชั่วคราว) เพื่อ debug
+      if (mounted && debugRaw != null) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('🔔 Debug Reminder'),
+            content: Text(
+              'has_reminder: $hasReminder\n'
+              'debug_raw: $debugRaw\n'
+              'reminder_time: $reminderTime\n'
+              'reminder_message: $reminderMessage\n'
+              'app_version: 1.4.1-debug',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
       }
 
       // ถ้ามี reminder → เก็บลงเครื่องก่อน แล้วค่อยตั้ง notification
-      if (response['has_reminder'] == true) {
-        final reminderTime = response['reminder_time'] as String?;
-        final reminderMessage = response['reminder_message'] as String?;
-
+      if (hasReminder) {
         if (reminderTime != null && reminderMessage != null) {
           try {
             // Backend ส่งเวลาเป็น Bangkok time (naive) เช่น "2025-03-01 14:00"
@@ -250,18 +270,16 @@ class _ChatScreenState extends State<ChatScreen> {
             }
           } catch (e) {
             debugPrint('Failed to handle reminder: $e');
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('ตั้งเตือน fail: $e'),
+                  backgroundColor: Colors.red,
+                ),
+              );
+            }
           }
         }
-      } else if (debugRaw != null && debugRaw != 'NONE' && mounted) {
-        // AI ส่ง reminder มาแต่ parse ไม่ผ่าน → แจ้งให้ user เห็น
-        final shortRaw = debugRaw.length > 60 ? '${debugRaw.substring(0, 60)}...' : debugRaw;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('AI ส่ง reminder: "$shortRaw" แต่ parse ไม่ผ่าน'),
-            backgroundColor: Colors.orange,
-            duration: const Duration(seconds: 5),
-          ),
-        );
       }
 
       return reply;
