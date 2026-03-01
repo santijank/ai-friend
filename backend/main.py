@@ -101,6 +101,7 @@ class ChatResponse(BaseModel):
     has_reminder: bool = False
     reminder_message: str | None = None
     reminder_time: str | None = None
+    debug_reminder_raw: str | None = None  # debug: แสดง raw reminder จาก AI
 
 
 class AlertItem(BaseModel):
@@ -273,13 +274,21 @@ async def chat(req: ChatRequest):
         # ========== จัดการ Reminder ==========
         response = ChatResponse(reply=reply)
 
-        if ai_result["reminder"]:
-            parsed = parse_reminder_text(ai_result["reminder"])
+        raw_reminder = ai_result.get("reminder")
+        if raw_reminder:
+            logger.info(f"🔔 Raw reminder from AI: '{raw_reminder}'")
+            response.debug_reminder_raw = raw_reminder  # ส่งกลับให้ app debug
+            parsed = parse_reminder_text(raw_reminder)
             if parsed:
                 db.add_reminder(req.user_id, parsed["message"], parsed["remind_at"])
                 response.has_reminder = True
                 response.reminder_message = parsed["message"]
                 response.reminder_time = parsed["remind_at"]
+                logger.info(f"✅ Reminder parsed: {parsed['remind_at']} — {parsed['message']}")
+            else:
+                logger.warning(f"⚠️ parse_reminder_text FAILED for: '{raw_reminder}'")
+        else:
+            logger.info("ℹ️ No reminder from AI (None or NONE)")
 
         return response
 

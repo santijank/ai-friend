@@ -9,7 +9,7 @@ import json
 import re
 import random
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -177,7 +177,13 @@ def build_system_prompt(
 ตอบในรูปแบบนี้เสมอ:
 REPLY: (ข้อความถึงผู้ใช้)
 MEMORY_UPDATE: (ข้อมูลใหม่ที่ได้เรียนรู้จากบทสนทนานี้ เขียนสั้น ๆ | หรือ NONE)
-REMINDER: (YYYY-MM-DD HH:MM ข้อความเตือน | หรือ NONE)"""
+REMINDER: (YYYY-MM-DD HH:MM ข้อความเตือน | หรือ NONE)
+
+ตัวอย่าง REMINDER ที่ถูกต้อง:
+- ผู้ใช้: "เตือนตอน 3 โมง ไปหาหมอ" → REMINDER: {time_str[:10]} 15:00 ไปหาหมอ
+- ผู้ใช้: "พรุ่งนี้ 8 โมง ประชุม" → REMINDER: (วันพรุ่งนี้ YYYY-MM-DD) 08:00 ประชุม
+- ไม่มีนัด → REMINDER: NONE
+สำคัญ: REMINDER ต้องเป็นรูปแบบ YYYY-MM-DD HH:MM ข้อความ เท่านั้น ห้ามใส่คำอื่นนำหน้าวันที่"""
 
 
 def _summarize_memory(memory: dict) -> str:
@@ -445,11 +451,69 @@ def parse_ai_response(raw_text: str) -> dict:
 
 
 def parse_reminder_text(reminder_text: str) -> dict | None:
-    """แยก reminder text เป็น datetime + message"""
-    match = re.match(r"(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s+(.+)", reminder_text)
+    """แยก reminder text เป็น datetime + message
+    รองรับหลายรูปแบบ:
+      - 2025-03-01 14:30 ข้อความ
+      - 2025-03-01T14:30 ข้อความ
+      - 14:30 ข้อความ (ใช้วันนี้/พรุ่งนี้)
+      - HH:MM ข้อความ
+    """
+    if not reminder_text:
+        return None
+
+    text = reminder_text.strip()
+
+    # Pattern 1: YYYY-MM-DD HH:MM ข้อความ (original)
+    match = re.match(r"(\d{4}-\d{2}-\d{2})\s*[T\s]\s*(\d{1,2}:\d{2})\s+(.+)", text, re.DOTALL)
     if match:
+        date_part = match.group(1)
+        time_part = match.group(2)
+        message = match.group(3).strip()
         return {
-            "remind_at": match.group(1),
-            "message": match.group(2),
+            "remind_at": f"{date_part} {time_part}",
+            "message": message,
         }
+
+    # Pattern 2: HH:MM ข้อความ (ไม่มีวันที่ → ใช้วันนี้/พรุ่งนี้)
+    match = re.match(r"(\d{1,2}:\d{2})\s+(.+)", text, re.DOTALL)
+    if match:
+        time_str = match.group(1)
+        message = match.group(2).strip()
+        try:
+            bkk = ZoneInfo("Asia/Bangkok")
+            now = datetime.now(bkk)
+            hour, minute = map(int, time_str.split(":"))
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if target <= now:
+                target += timedelta(days=1)  # ถ้าเลยแล้ว → พรุ่งนี้
+            date_part = target.strftime("%Y-%m-%d")
+            return {
+                "remind_at": f"{date_part} {time_str}",
+                "message": message,
+            }
+        except Exception:
+            pass
+
+    # Pattern 3: พรุ่งนี้ HH:MM ข้อความ / วันนี้ HH:MM ข้อความ
+    match = re.match(r"(วันนี้|พรุ่งนี้|tomorrow|today)\s*(\d{1,2}:\d{2})\s+(.+)", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        day_word = match.group(1).lower()
+        time_str = match.group(2)
+        message = match.group(3).strip()
+        try:
+            bkk = ZoneInfo("Asia/Bangkok")
+            now = datetime.now(bkk)
+            hour, minute = map(int, time_str.split(":"))
+            if day_word in ("พรุ่งนี้", "tomorrow"):
+                target = (now + timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+            else:
+                target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            date_part = target.strftime("%Y-%m-%d")
+            return {
+                "remind_at": f"{date_part} {time_str}",
+                "message": message,
+            }
+        except Exception:
+            pass
+
     return None

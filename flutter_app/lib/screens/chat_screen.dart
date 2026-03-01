@@ -207,6 +207,12 @@ class _ChatScreenState extends State<ChatScreen> {
         await TtsService.speak(reply);
       }
 
+      // Debug: แสดง raw reminder จาก AI (ถ้ามี)
+      final debugRaw = response['debug_reminder_raw'] as String?;
+      if (debugRaw != null) {
+        debugPrint('🔔 AI raw reminder: $debugRaw');
+      }
+
       // ถ้ามี reminder → เก็บลงเครื่องก่อน แล้วค่อยตั้ง notification
       if (response['has_reminder'] == true) {
         final reminderTime = response['reminder_time'] as String?;
@@ -230,11 +236,31 @@ class _ChatScreenState extends State<ChatScreen> {
                 scheduledTime: dt,
               );
               debugPrint('Reminder saved + scheduled: $reminderMessage at $dt');
+
+              // แจ้งผู้ใช้ว่าตั้งเตือนสำเร็จ
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text('ตั้งเตือน "$reminderMessage" เรียบร้อย!'),
+                    backgroundColor: Colors.green,
+                    duration: const Duration(seconds: 3),
+                  ),
+                );
+              }
             }
           } catch (e) {
             debugPrint('Failed to handle reminder: $e');
           }
         }
+      } else if (debugRaw != null && mounted) {
+        // AI ส่ง reminder มาแต่ parse ไม่ผ่าน → แจ้งให้ user เห็น
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('AI ส่ง reminder: "$debugRaw" แต่ parse ไม่ผ่าน'),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 5),
+          ),
+        );
       }
 
       return reply;
