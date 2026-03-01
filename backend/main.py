@@ -274,21 +274,25 @@ async def chat(req: ChatRequest):
         # ========== จัดการ Reminder ==========
         response = ChatResponse(reply=reply)
 
+        # ส่ง raw reminder line กลับ Flutter เสมอ (debug)
+        raw_reminder_line = ai_result.get("raw_reminder_line")
+        if raw_reminder_line:
+            response.debug_reminder_raw = raw_reminder_line
+
         raw_reminder = ai_result.get("reminder")
         if raw_reminder:
-            logger.info(f"🔔 Raw reminder from AI: '{raw_reminder}'")
-            response.debug_reminder_raw = raw_reminder  # ส่งกลับให้ app debug
+            logger.info(f"🔔 Parsed reminder value: '{raw_reminder}'")
             parsed = parse_reminder_text(raw_reminder)
             if parsed:
                 db.add_reminder(req.user_id, parsed["message"], parsed["remind_at"])
                 response.has_reminder = True
                 response.reminder_message = parsed["message"]
                 response.reminder_time = parsed["remind_at"]
-                logger.info(f"✅ Reminder parsed: {parsed['remind_at']} — {parsed['message']}")
+                logger.info(f"✅ Reminder scheduled: {parsed['remind_at']} — {parsed['message']}")
             else:
                 logger.warning(f"⚠️ parse_reminder_text FAILED for: '{raw_reminder}'")
         else:
-            logger.info("ℹ️ No reminder from AI (None or NONE)")
+            logger.info(f"ℹ️ No reminder (raw_reminder_line='{raw_reminder_line}')")
 
         return response
 

@@ -130,6 +130,7 @@ def build_system_prompt(
     day_names = ["จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์"]
     day_name = day_names[today.weekday()]
     time_str = today.strftime("%H:%M")
+    date_str = today.strftime("%Y-%m-%d")    # สำหรับตัวอย่าง REMINDER
     hour = today.hour
 
     if 5 <= hour < 12:
@@ -180,10 +181,11 @@ MEMORY_UPDATE: (ข้อมูลใหม่ที่ได้เรียน�
 REMINDER: (YYYY-MM-DD HH:MM ข้อความเตือน | หรือ NONE)
 
 ตัวอย่าง REMINDER ที่ถูกต้อง:
-- ผู้ใช้: "เตือนตอน 3 โมง ไปหาหมอ" → REMINDER: {time_str[:10]} 15:00 ไปหาหมอ
-- ผู้ใช้: "พรุ่งนี้ 8 โมง ประชุม" → REMINDER: (วันพรุ่งนี้ YYYY-MM-DD) 08:00 ประชุม
-- ไม่มีนัด → REMINDER: NONE
-สำคัญ: REMINDER ต้องเป็นรูปแบบ YYYY-MM-DD HH:MM ข้อความ เท่านั้น ห้ามใส่คำอื่นนำหน้าวันที่"""
+- ผู้ใช้: "เตือนตอน 3 โมง ไปหาหมอ" → REMINDER: {date_str} 15:00 ไปหาหมอ
+- ผู้ใช้: "พรุ่งนี้ 8 โมง ประชุม" → REMINDER: (พรุ่งนี้ในรูปแบบ YYYY-MM-DD) 08:00 ประชุม
+- ผู้ใช้: "อีก 30 นาทีเตือนกินยา" → REMINDER: {date_str} {time_str} กินยา (คำนวณเวลาจากปัจจุบัน+30นาที)
+- ไม่มีนัดหมาย → REMINDER: NONE
+สำคัญ: REMINDER ต้องขึ้นต้นด้วย YYYY-MM-DD HH:MM แล้วตามด้วยข้อความ ห้ามใส่คำอื่นนำหน้าวันที่"""
 
 
 def _summarize_memory(memory: dict) -> str:
@@ -416,10 +418,13 @@ def parse_ai_response(raw_text: str) -> dict:
     """แยกคำตอบ AI ออกเป็น reply, memory_update, reminder
     รองรับทั้งแบบมี REPLY: นำหน้า และไม่มี"""
 
+    logger.info(f"📝 Raw AI output:\n{raw_text[:500]}")
+
     result = {
         "reply": "",
         "memory_update": None,
         "reminder": None,
+        "raw_reminder_line": None,  # debug: เก็บ raw REMINDER line จาก AI
     }
 
     # ดึง MEMORY_UPDATE
@@ -433,8 +438,14 @@ def parse_ai_response(raw_text: str) -> dict:
     rem_match = re.search(r"REMINDER:\s*(.+?)$", raw_text, re.DOTALL)
     if rem_match:
         rem_text = rem_match.group(1).strip()
+        result["raw_reminder_line"] = rem_text  # เก็บ raw ไว้ debug เสมอ
+        logger.info(f"🔔 Extracted REMINDER line: '{rem_text}'")
         if rem_text.upper() != "NONE" and rem_text:
             result["reminder"] = rem_text
+        else:
+            logger.info("ℹ️ AI output REMINDER: NONE")
+    else:
+        logger.warning("⚠️ No REMINDER line found in AI output!")
 
     # ดึง REPLY — ลอง REPLY: ก่อน, ถ้าไม่มีก็ตัด MEMORY_UPDATE/REMINDER ออก
     reply_match = re.search(r"REPLY:\s*(.+?)(?=MEMORY_UPDATE:|REMINDER:|$)", raw_text, re.DOTALL)

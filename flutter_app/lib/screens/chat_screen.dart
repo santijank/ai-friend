@@ -252,11 +252,12 @@ class _ChatScreenState extends State<ChatScreen> {
             debugPrint('Failed to handle reminder: $e');
           }
         }
-      } else if (debugRaw != null && mounted) {
+      } else if (debugRaw != null && debugRaw != 'NONE' && mounted) {
         // AI ส่ง reminder มาแต่ parse ไม่ผ่าน → แจ้งให้ user เห็น
+        final shortRaw = debugRaw.length > 60 ? '${debugRaw.substring(0, 60)}...' : debugRaw;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('AI ส่ง reminder: "$debugRaw" แต่ parse ไม่ผ่าน'),
+            content: Text('AI ส่ง reminder: "$shortRaw" แต่ parse ไม่ผ่าน'),
             backgroundColor: Colors.orange,
             duration: const Duration(seconds: 5),
           ),
