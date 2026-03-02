@@ -1,8 +1,10 @@
 /// main.dart — จุดเริ่มต้นแอป ฟ้า AI Friend
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'config.dart';
 import 'services/local_storage.dart';
 import 'services/notification_service.dart';
+import 'services/fcm_service.dart';
 import 'services/background_alert_service.dart';
 import 'services/tts_service.dart';
 import 'services/stt_service.dart';
@@ -13,12 +15,16 @@ import 'screens/home_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Firebase (ต้อง init ก่อน FCM)
+  await Firebase.initializeApp();
+
   // เริ่มต้น services
   await LocalStorage.init();
   await NotificationService.init();
   await NotificationService.requestPermission();
   await NotificationService.requestBatteryOptimizationExemption();
   await NotificationService.cleanStalePendingNotifications();
+  await FcmService.init();
   await TtsService.init();
   await SttService.init();
 

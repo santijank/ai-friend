@@ -110,6 +110,17 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_routine_logs ON routine_logs(routine_id, completed_date);
         CREATE INDEX IF NOT EXISTS idx_alerts_active ON alerts(is_active, fetched_at DESC);
         CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity, is_active, fetched_at DESC);
+
+        CREATE TABLE IF NOT EXISTS device_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            fcm_token TEXT NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id);
     """)
     conn.commit()
     conn.close()
@@ -447,5 +458,42 @@ def expire_old_alerts():
         "UPDATE alerts SET is_active = 0 WHERE expires_at < ? AND is_active = 1",
         (now,),
     )
+    conn.commit()
+    conn.close()
+
+
+# ==================== Device Tokens (FCM) ====================
+
+def save_device_token(user_id: str, fcm_token: str):
+    """บันทึก FCM token — ถ้ามีอยู่แล้วจะอัพเดท user_id"""
+    conn = get_db()
+    now = datetime.now(BKK).isoformat()
+    conn.execute(
+        """INSERT INTO device_tokens (user_id, fcm_token, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(fcm_token) DO UPDATE SET
+               user_id = excluded.user_id,
+               updated_at = excluded.updated_at""",
+        (user_id, fcm_token, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_user_fcm_tokens(user_id: str) -> list[str]:
+    """ดึง FCM tokens ทั้งหมดของผู้ใช้"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT fcm_token FROM device_tokens WHERE user_id = ?",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    return [r["fcm_token"] for r in rows]
+
+
+def delete_fcm_token(fcm_token: str):
+    """ลบ token ที่ใช้ไม่ได้แล้ว (expired/unregistered)"""
+    conn = get_db()
+    conn.execute("DELETE FROM device_tokens WHERE fcm_token = ?", (fcm_token,))
     conn.commit()
     conn.close()

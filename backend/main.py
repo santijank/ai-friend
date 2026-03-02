@@ -25,8 +25,12 @@ from ai_brain import try_local_reply, call_haiku, parse_reminder_text
 from memory import process_memory_update, get_memory_summary
 from morning_brief import generate_morning_brief, generate_night_wrap
 from news_fetcher import run_alert_fetch_job
+from push_sender import init_firebase, send_push_to_user
 
 logging.basicConfig(level=logging.INFO)
+
+# Global scheduler — ใช้ schedule push notifications ด้วย
+reminder_scheduler: AsyncIOScheduler | None = None
 
 
 # ==================== App Setup ====================
@@ -34,12 +38,17 @@ logging.basicConfig(level=logging.INFO)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """เริ่มต้น: สร้างตาราง DB + เริ่ม Alert Scheduler"""
+    global reminder_scheduler
+
     db.init_db()
     print("[OK] Database initialized")
 
-    # เริ่ม APScheduler — ดึงข่าว/แผ่นดินไหวทุก 7 นาที
-    scheduler = AsyncIOScheduler(timezone="Asia/Bangkok")
-    scheduler.add_job(
+    # เริ่มต้น Firebase Admin SDK (สำหรับ push notifications)
+    init_firebase()
+
+    # เริ่ม APScheduler — ดึงข่าว/แผ่นดินไหวทุก 7 นาที + schedule push
+    reminder_scheduler = AsyncIOScheduler(timezone="Asia/Bangkok")
+    reminder_scheduler.add_job(
         run_alert_fetch_job,
         trigger="interval",
         minutes=7,
@@ -49,7 +58,7 @@ async def lifespan(app: FastAPI):
         max_instances=1,
         misfire_grace_time=60,
     )
-    scheduler.start()
+    reminder_scheduler.start()
     print("[OK] Alert scheduler started (every 7 minutes)")
 
     # ดึงข้อมูลทันทีตอน start
@@ -61,8 +70,45 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    scheduler.shutdown(wait=False)
+    reminder_scheduler.shutdown(wait=False)
+    reminder_scheduler = None
     print("[BYE] Scheduler stopped. Server shutting down")
+
+
+def schedule_push_for_reminder(user_id: str, message: str, remind_at: str):
+    """ตั้งเวลา push notification สำหรับ reminder"""
+    logger = logging.getLogger(__name__)
+
+    if not reminder_scheduler:
+        logger.warning("Scheduler not ready — skipping push schedule")
+        return
+
+    try:
+        # parse remind_at เช่น "2026-03-03 15:30"
+        dt = datetime.strptime(remind_at.strip(), "%Y-%m-%d %H:%M")
+        run_time = dt.replace(tzinfo=ZoneInfo("Asia/Bangkok"))
+
+        # ถ้าเลยเวลาแล้ว → ส่งทันที
+        now = datetime.now(ZoneInfo("Asia/Bangkok"))
+        if run_time <= now:
+            logger.info(f"Reminder time already passed — sending push now")
+            send_push_to_user(user_id, "🤖 ฟ้าเตือน~", message)
+            return
+
+        job_id = f"push_{user_id}_{remind_at.replace(' ', '_')}"
+
+        reminder_scheduler.add_job(
+            send_push_to_user,
+            trigger="date",
+            run_date=run_time,
+            args=[user_id, "🤖 ฟ้าเตือน~", message],
+            id=job_id,
+            replace_existing=True,
+            misfire_grace_time=300,  # ยอมให้ delay 5 นาที
+        )
+        logger.info(f"Push scheduled: {job_id} at {run_time}")
+    except Exception as e:
+        logger.error(f"Failed to schedule push: {e}")
 
 
 app = FastAPI(title="AI Friend API", version="1.0.0", lifespan=lifespan)
@@ -142,6 +188,11 @@ class SettingsRequest(BaseModel):
     personality: str | None = None
     wake_time: str | None = None
     sleep_time: str | None = None
+
+
+class DeviceTokenRequest(BaseModel):
+    user_id: str
+    fcm_token: str
 
 
 # ==================== API Endpoints ====================
@@ -288,6 +339,10 @@ async def chat(req: ChatRequest):
                 response.has_reminder = True
                 response.reminder_message = parsed["message"]
                 response.reminder_time = parsed["remind_at"]
+
+                # ตั้ง push notification ตรงเวลา
+                schedule_push_for_reminder(req.user_id, parsed["message"], parsed["remind_at"])
+
                 logger.info(f"✅ Reminder scheduled: {parsed['remind_at']} — {parsed['message']}")
             else:
                 logger.warning(f"⚠️ parse_reminder_text FAILED for: '{raw_reminder}'")
@@ -352,6 +407,10 @@ async def add_reminder(req: AddReminderRequest):
         raise HTTPException(status_code=404, detail="User not found")
 
     db.add_reminder(req.user_id, req.message, req.remind_at)
+
+    # ตั้ง push notification ตรงเวลา
+    schedule_push_for_reminder(req.user_id, req.message, req.remind_at)
+
     return {"status": "ok", "message": "Reminder added"}
 
 
@@ -360,6 +419,20 @@ async def complete_reminder(reminder_id: int):
     """ทำเครื่องหมาย reminder ว่าเสร็จแล้ว"""
     db.mark_reminder_done(reminder_id)
     return {"status": "ok"}
+
+
+# ==================== Device Token (FCM Push) ====================
+
+@app.post("/devices/register-token")
+async def register_device_token(req: DeviceTokenRequest):
+    """ลงทะเบียน FCM token สำหรับ push notification"""
+    logger = logging.getLogger(__name__)
+    if not req.user_id or not req.fcm_token:
+        raise HTTPException(status_code=400, detail="user_id and fcm_token required")
+
+    db.save_device_token(req.user_id, req.fcm_token)
+    logger.info(f"FCM token registered for user {req.user_id}: {req.fcm_token[:20]}...")
+    return {"status": "ok", "message": "Token registered"}
 
 
 # ==================== Health Check ====================
