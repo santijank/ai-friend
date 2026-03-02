@@ -45,6 +45,8 @@ desktop.ini
 
 # ===== Secrets =====
 keystore-base64.txt
+service-account*.json
+flutter_app/android/app/google-services.json
 
 # ===== Claude =====
 .claude/
