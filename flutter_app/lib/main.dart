@@ -17,6 +17,8 @@ void main() async {
   await LocalStorage.init();
   await NotificationService.init();
   await NotificationService.requestPermission();
+  await NotificationService.requestBatteryOptimizationExemption();
+  await NotificationService.cleanStalePendingNotifications();
   await TtsService.init();
   await SttService.init();
 

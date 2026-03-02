@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/timezone.dart' as tz;
 import 'package:timezone/data/latest.dart' as tz_data;
+import 'package:android_intent_plus/android_intent.dart';
 
 class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
@@ -420,6 +421,19 @@ class NotificationService {
       buf.writeln('8) Exact alarm check FAIL: $e');
     }
 
+    // 9. Check battery optimization status
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        // ใช้ Android intent เพื่อเปิดหน้าตั้งค่า battery
+        buf.writeln('9) Battery optimization: ตรวจสอบโดย request exemption ตอนเปิดแอป');
+        buf.writeln('   → ถ้ายังไม่ได้กด "อนุญาต" ให้กดที่หน้า popup');
+      } else {
+        buf.writeln('9) Battery optimization: N/A (not Android)');
+      }
+    } catch (e) {
+      buf.writeln('9) Battery optimization check FAIL: $e');
+    }
+
     return buf.toString();
   }
 
@@ -468,6 +482,45 @@ class NotificationService {
           'ถ้าไม่มี notification ใน 30 วิ = Android block (battery/doze)';
     } catch (e) {
       return 'ตั้งเวลาไม่ได้: $e';
+    }
+  }
+
+  /// ขอยกเว้น Battery Optimization (Doze Mode) — เปิด system dialog
+  static Future<void> requestBatteryOptimizationExemption() async {
+    try {
+      if (defaultTargetPlatform != TargetPlatform.android) return;
+
+      const intent = AndroidIntent(
+        action: 'android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS',
+        data: 'package:com.aifriend.ai_friend',
+      );
+      await intent.launch();
+      debugPrint('✅ Battery optimization exemption dialog launched');
+    } catch (e) {
+      debugPrint('⚠️ Battery optimization request failed (non-fatal): $e');
+    }
+  }
+
+  /// ล้าง notification ที่ค้าง (เลยเวลาแล้วแต่ไม่ยิง) แล้ว cancel ทั้งหมด
+  static Future<int> cleanStalePendingNotifications() async {
+    try {
+      final pending = await _plugin.pendingNotificationRequests();
+      if (pending.isEmpty) return 0;
+
+      // cancel ทุก id ที่เป็น test (99990-99992, 88888) ไม่นับ
+      final staleIds = pending
+          .where((p) => p.id != 99990 && p.id != 99991 && p.id != 99992 && p.id != 88888)
+          .map((p) => p.id)
+          .toList();
+
+      for (final id in staleIds) {
+        await _plugin.cancel(id);
+      }
+      debugPrint('🧹 Cleaned ${staleIds.length} stale pending notifications');
+      return staleIds.length;
+    } catch (e) {
+      debugPrint('Clean stale notifications error: $e');
+      return 0;
     }
   }
 }

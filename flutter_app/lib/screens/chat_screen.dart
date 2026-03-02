@@ -207,69 +207,38 @@ class _ChatScreenState extends State<ChatScreen> {
         await TtsService.speak(reply);
       }
 
-      // === DEBUG: แสดงข้อมูล reminder จาก API ===
-      final debugRaw = response['debug_reminder_raw'] as String?;
+      // จัดการ reminder จาก API response
       final hasReminder = response['has_reminder'] == true;
       final reminderTime = response['reminder_time'] as String?;
       final reminderMessage = response['reminder_message'] as String?;
 
-      // ถ้ามี reminder → เก็บลงเครื่องก่อน แล้วค่อยตั้ง notification
-      String scheduleResult = '';
-      if (hasReminder) {
-        if (reminderTime != null && reminderMessage != null) {
-          try {
-            final dt = DateTime.parse(reminderTime.replaceAll(' ', 'T'));
-            if (dt.isAfter(DateTime.now())) {
-              await LocalStorage.saveReminder(
-                message: reminderMessage,
-                remindAt: reminderTime,
+      if (hasReminder && reminderTime != null && reminderMessage != null) {
+        try {
+          final dt = DateTime.parse(reminderTime.replaceAll(' ', 'T'));
+          if (dt.isAfter(DateTime.now())) {
+            await LocalStorage.saveReminder(
+              message: reminderMessage,
+              remindAt: reminderTime,
+            );
+            await NotificationService.scheduleReminder(
+              id: dt.millisecondsSinceEpoch ~/ 1000,
+              title: '🤖 ฟ้าเตือน~',
+              body: reminderMessage,
+              scheduledTime: dt,
+            );
+            debugPrint('Reminder saved + scheduled: $reminderMessage at $dt');
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('ตั้งเตือน "$reminderMessage" เรียบร้อย!'),
+                  backgroundColor: Colors.green,
+                ),
               );
-              await NotificationService.scheduleReminder(
-                id: dt.millisecondsSinceEpoch ~/ 1000,
-                title: '🤖 ฟ้าเตือน~',
-                body: reminderMessage,
-                scheduledTime: dt,
-              );
-              scheduleResult = 'SAVE+SCHEDULE OK ✅ ($dt)';
-              debugPrint('Reminder saved + scheduled: $reminderMessage at $dt');
-            } else {
-              scheduleResult = 'SKIPPED: time is in past ⚠️ ($dt)';
             }
-          } catch (e) {
-            scheduleResult = 'FAIL ❌: $e';
-            debugPrint('Failed to handle reminder: $e');
           }
-        } else {
-          scheduleResult = 'SKIPPED: time=$reminderTime msg=$reminderMessage';
+        } catch (e) {
+          debugPrint('Failed to handle reminder: $e');
         }
-      }
-
-      // แสดง debug dialog เสมอ (ชั่วคราว) เพื่อ debug
-      if (mounted && debugRaw != null) {
-        showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text('🔔 Debug Reminder'),
-            content: SingleChildScrollView(
-              child: Text(
-                'app_version: 1.4.1\n'
-                '─── API Response ───\n'
-                'has_reminder: $hasReminder\n'
-                'debug_raw: $debugRaw\n'
-                'reminder_time: $reminderTime\n'
-                'reminder_msg: $reminderMessage\n'
-                '─── Schedule Result ───\n'
-                '${scheduleResult.isEmpty ? "N/A (no reminder)" : scheduleResult}',
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('OK'),
-              ),
-            ],
-          ),
-        );
       }
 
       return reply;
