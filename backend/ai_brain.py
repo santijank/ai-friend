@@ -131,6 +131,7 @@ def build_system_prompt(
     day_name = day_names[today.weekday()]
     time_str = today.strftime("%H:%M")
     date_str = today.strftime("%Y-%m-%d")    # สำหรับตัวอย่าง REMINDER
+    plus30_str = (today + timedelta(minutes=30)).strftime("%H:%M")  # ตัวอย่าง +30 นาที
     hour = today.hour
 
     if 5 <= hour < 12:
@@ -183,9 +184,12 @@ REMINDER: (YYYY-MM-DD HH:MM ข้อความเตือน | หรือ 
 ตัวอย่าง REMINDER ที่ถูกต้อง:
 - ผู้ใช้: "เตือนตอน 3 โมง ไปหาหมอ" → REMINDER: {date_str} 15:00 ไปหาหมอ
 - ผู้ใช้: "พรุ่งนี้ 8 โมง ประชุม" → REMINDER: (พรุ่งนี้ในรูปแบบ YYYY-MM-DD) 08:00 ประชุม
-- ผู้ใช้: "อีก 30 นาทีเตือนกินยา" → REMINDER: {date_str} {time_str} กินยา (คำนวณเวลาจากปัจจุบัน+30นาที)
+- ผู้ใช้: "อีก 30 นาทีเตือนกินยา" → REMINDER: {date_str} {plus30_str} กินยา
+- ผู้ใช้: "เตือนอีก 1 นาที ทดสอบ" → REMINDER: อีก 1 นาที ทดสอบ
 - ไม่มีนัดหมาย → REMINDER: NONE
-สำคัญ: REMINDER ต้องขึ้นต้นด้วย YYYY-MM-DD HH:MM แล้วตามด้วยข้อความ ห้ามใส่คำอื่นนำหน้าวันที่"""
+สำคัญ: REMINDER format ได้ 2 แบบ:
+1) YYYY-MM-DD HH:MM ข้อความ (ถ้ารู้เวลาแน่นอน)
+2) อีก X นาที ข้อความ (ถ้าผู้ใช้บอกเป็น relative time)"""
 
 
 def _summarize_memory(memory: dict) -> str:
@@ -467,6 +471,7 @@ def parse_reminder_text(reminder_text: str) -> dict | None:
       - 2025-03-01 14:30 ข้อความ
       - 2025-03-01T14:30 ข้อความ
       - 14:30 ข้อความ (ใช้วันนี้/พรุ่งนี้)
+      - อีก X นาที/ชั่วโมง ข้อความ (relative time)
       - HH:MM ข้อความ
     """
     if not reminder_text:
@@ -485,7 +490,33 @@ def parse_reminder_text(reminder_text: str) -> dict | None:
             "message": message,
         }
 
-    # Pattern 2: HH:MM ข้อความ (ไม่มีวันที่ → ใช้วันนี้/พรุ่งนี้)
+    # Pattern 2: อีก X นาที/ชั่วโมง ข้อความ (relative time — Thai)
+    match = re.match(
+        r"อีก\s*(\d+)\s*(นาที|ชั่วโมง|ชม\.?|min(?:ute)?s?|hour?s?)\s+(.+)",
+        text, re.DOTALL | re.IGNORECASE,
+    )
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2).strip().lower()
+        message = match.group(3).strip()
+        try:
+            bkk = ZoneInfo("Asia/Bangkok")
+            now = datetime.now(bkk)
+            if unit in ("ชั่วโมง", "ชม", "ชม.", "hour", "hours"):
+                target = now + timedelta(hours=amount)
+            else:
+                target = now + timedelta(minutes=amount)
+            date_part = target.strftime("%Y-%m-%d")
+            time_part = target.strftime("%H:%M")
+            logger.info(f"⏱️ Relative time parsed: อีก {amount} {unit} → {date_part} {time_part}")
+            return {
+                "remind_at": f"{date_part} {time_part}",
+                "message": message,
+            }
+        except Exception:
+            pass
+
+    # Pattern 3: HH:MM ข้อความ (ไม่มีวันที่ → ใช้วันนี้/พรุ่งนี้)
     match = re.match(r"(\d{1,2}:\d{2})\s+(.+)", text, re.DOTALL)
     if match:
         time_str = match.group(1)
@@ -505,7 +536,7 @@ def parse_reminder_text(reminder_text: str) -> dict | None:
         except Exception:
             pass
 
-    # Pattern 3: พรุ่งนี้ HH:MM ข้อความ / วันนี้ HH:MM ข้อความ
+    # Pattern 4: พรุ่งนี้ HH:MM ข้อความ / วันนี้ HH:MM ข้อความ
     match = re.match(r"(วันนี้|พรุ่งนี้|tomorrow|today)\s*(\d{1,2}:\d{2})\s+(.+)", text, re.DOTALL | re.IGNORECASE)
     if match:
         day_word = match.group(1).lower()
@@ -522,6 +553,28 @@ def parse_reminder_text(reminder_text: str) -> dict | None:
             date_part = target.strftime("%Y-%m-%d")
             return {
                 "remind_at": f"{date_part} {time_str}",
+                "message": message,
+            }
+        except Exception:
+            pass
+
+    # Pattern 5: in X minutes/hours message (English relative)
+    match = re.match(r"in\s+(\d+)\s*(min(?:ute)?s?|hours?)\s+(.+)", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2).strip().lower()
+        message = match.group(3).strip()
+        try:
+            bkk = ZoneInfo("Asia/Bangkok")
+            now = datetime.now(bkk)
+            if "hour" in unit:
+                target = now + timedelta(hours=amount)
+            else:
+                target = now + timedelta(minutes=amount)
+            date_part = target.strftime("%Y-%m-%d")
+            time_part = target.strftime("%H:%M")
+            return {
+                "remind_at": f"{date_part} {time_part}",
                 "message": message,
             }
         except Exception:
