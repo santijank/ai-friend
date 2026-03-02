@@ -1,4 +1,5 @@
 /// notification_service.dart — จัดการ Local Notifications (พร้อมเสียง)
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/timezone.dart' as tz;
@@ -7,6 +8,9 @@ import 'package:android_intent_plus/android_intent.dart';
 
 class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
+
+  /// Timer-based scheduling (ทำงาน 100% ขณะแอปเปิด)
+  static final Map<int, Timer> _activeTimers = {};
 
   static Future<void> init() async {
     // ตั้ง timezone เป็น Bangkok (สำคัญมาก! ถ้าไม่ตั้ง จะใช้ UTC)
@@ -138,8 +142,23 @@ class NotificationService {
     );
   }
 
-  /// ตั้งเตือนครั้งเดียว (พร้อมเสียง) — ไม่ throw exception
-  /// ใช้ 3-level fallback: exact → inexact → show ทันที
+  static const _reminderDetails = NotificationDetails(
+    android: AndroidNotificationDetails(
+      'reminders_v2',
+      'Reminders',
+      channelDescription: 'การแจ้งเตือนจากฟ้า',
+      importance: Importance.max,
+      priority: Priority.max,
+      playSound: true,
+      enableVibration: true,
+    ),
+    iOS: DarwinNotificationDetails(
+      presentAlert: true,
+      presentSound: true,
+    ),
+  );
+
+  /// ตั้งเตือนครั้งเดียว — ใช้ Timer (primary) + zonedSchedule (backup)
   static Future<void> scheduleReminder({
     required int id,
     required String title,
@@ -152,73 +171,34 @@ class NotificationService {
       return;
     }
 
-    const details = NotificationDetails(
-      android: AndroidNotificationDetails(
-        'reminders_v2',
-        'Reminders',
-        channelDescription: 'การแจ้งเตือนจากฟ้า',
-        importance: Importance.max,
-        priority: Priority.max,
-        playSound: true,
-        enableVibration: true,
-      ),
-      iOS: DarwinNotificationDetails(
-        presentAlert: true,
-        presentSound: true,
-      ),
-    );
+    final delay = scheduledTime.difference(DateTime.now());
+    debugPrint('Scheduling: "$body" in ${delay.inSeconds}s (${scheduledTime.toIso8601String()})');
 
-    // แปลง timezone
-    tz.TZDateTime tzTime;
-    try {
-      tzTime = tz.TZDateTime.from(scheduledTime, tz.local);
-      debugPrint('Scheduling: "$body" at $tzTime (tz.local=${tz.local.name})');
-    } catch (e) {
-      debugPrint('⚠️ TZDateTime conversion failed: $e — using show() fallback');
-      // ถ้าแปลง timezone ไม่ได้ → แสดง notification ทันทีแทน
+    // === PRIMARY: Timer + show() — ทำงาน 100% ขณะแอปเปิด ===
+    _activeTimers[id]?.cancel();
+    _activeTimers[id] = Timer(delay, () async {
       try {
-        await _plugin.show(id, title, body, details);
-        debugPrint('✅ Showed immediate notification (timezone fallback)');
-      } catch (e2) {
-        debugPrint('❌ Even immediate notification failed: $e2');
+        await _plugin.show(id, title, body, _reminderDetails);
+        debugPrint('✅ Timer notification fired: $body');
+      } catch (e) {
+        debugPrint('❌ Timer notification failed: $e');
       }
-      return;
-    }
+      _activeTimers.remove(id);
+    });
+    debugPrint('⏱️ Timer set for ${delay.inSeconds}s');
 
-    // Level 1: exact alarm
+    // === BACKUP: zonedSchedule — อาจทำงานได้ถ้าแอปปิด (ขึ้นกับมือถือ) ===
     try {
+      final tzTime = tz.TZDateTime.from(scheduledTime, tz.local);
       await _plugin.zonedSchedule(
-        id, title, body, tzTime, details,
+        id, title, body, tzTime, _reminderDetails,
         androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
         uiLocalNotificationDateInterpretation:
             UILocalNotificationDateInterpretation.absoluteTime,
       );
-      debugPrint('✅ Scheduled with exactAllowWhileIdle');
-      return;
+      debugPrint('✅ Also scheduled zonedSchedule as backup');
     } catch (e) {
-      debugPrint('⚠️ Exact alarm failed: $e');
-    }
-
-    // Level 2: inexact alarm
-    try {
-      await _plugin.zonedSchedule(
-        id, title, body, tzTime, details,
-        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-        uiLocalNotificationDateInterpretation:
-            UILocalNotificationDateInterpretation.absoluteTime,
-      );
-      debugPrint('✅ Scheduled with inexactAllowWhileIdle');
-      return;
-    } catch (e) {
-      debugPrint('⚠️ Inexact alarm failed: $e');
-    }
-
-    // Level 3: immediate notification (ultimate fallback)
-    try {
-      await _plugin.show(id, title, '(จะเตือนเวลาถึง) $body', details);
-      debugPrint('✅ Showed immediate notification as fallback');
-    } catch (e) {
-      debugPrint('❌ Even immediate notification failed: $e');
+      debugPrint('⚠️ zonedSchedule backup failed (non-fatal): $e');
     }
   }
 
@@ -437,49 +417,31 @@ class NotificationService {
     return buf.toString();
   }
 
-  /// ตั้งเตือนทดสอบจริง 30 วินาที (ไม่ cancel — ต้องมา notification จริง)
+  /// ตั้งเตือนทดสอบจริง 10 วินาที — ใช้ Timer (ต้องมา notification จริง)
   static Future<String> scheduleTestNotification() async {
-    const details = NotificationDetails(
-      android: AndroidNotificationDetails(
-        'reminders_v2',
-        'Reminders',
-        channelDescription: 'การแจ้งเตือนจากฟ้า',
-        importance: Importance.max,
-        priority: Priority.max,
-        playSound: true,
-        enableVibration: true,
-      ),
-      iOS: DarwinNotificationDetails(
-        presentAlert: true,
-        presentSound: true,
-      ),
-    );
-
     try {
-      // นับ pending ก่อน schedule
-      final beforePending = await _plugin.pendingNotificationRequests();
-      final beforeCount = beforePending.length;
+      // ใช้ Timer + show() (เชื่อถือได้ 100% ขณะแอปเปิด)
+      _activeTimers[88888]?.cancel();
+      _activeTimers[88888] = Timer(const Duration(seconds: 10), () async {
+        try {
+          await _plugin.show(
+            88888,
+            '🔔 ทดสอบสำเร็จ!',
+            'ระบบแจ้งเตือนทำงานแล้ว! (Timer-based)',
+            _reminderDetails,
+          );
+          debugPrint('✅ Test timer notification fired!');
+        } catch (e) {
+          debugPrint('❌ Test timer notification failed: $e');
+        }
+        _activeTimers.remove(88888);
+      });
 
-      final fireAt = tz.TZDateTime.now(tz.local).add(const Duration(seconds: 30));
-      await _plugin.zonedSchedule(
-        88888,
-        '🔔 ทดสอบสำเร็จ!',
-        'ถ้าเห็นข้อความนี้ แปลว่าระบบแจ้งเตือนทำงานแล้ว!',
-        fireAt,
-        details,
-        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-        uiLocalNotificationDateInterpretation:
-            UILocalNotificationDateInterpretation.absoluteTime,
-      );
-
-      // นับ pending หลัง schedule
-      final afterPending = await _plugin.pendingNotificationRequests();
-      final afterCount = afterPending.length;
-
-      final timeStr = '${fireAt.hour}:${fireAt.minute.toString().padLeft(2, '0')}:${fireAt.second.toString().padLeft(2, '0')}';
-      return 'ตั้งเวลาแล้ว! จะมี notification ใน 30 วินาที ($timeStr)\n'
-          'Pending: $beforeCount → $afterCount ${afterCount > beforeCount ? "✅" : "⚠️ ไม่เพิ่ม!"}\n'
-          'ถ้าไม่มี notification ใน 30 วิ = Android block (battery/doze)';
+      final now = DateTime.now();
+      final timeStr = '${now.hour}:${now.minute.toString().padLeft(2, '0')}:${(now.second + 10).toString().padLeft(2, '0')}';
+      return 'ตั้ง Timer แล้ว! จะมี notification ใน 10 วินาที (~$timeStr)\n'
+          'ใช้ Timer+show() (ไม่พึ่ง AlarmManager)\n'
+          'เปิดแอปค้างไว้ รอ 10 วินาที...';
     } catch (e) {
       return 'ตั้งเวลาไม่ได้: $e';
     }

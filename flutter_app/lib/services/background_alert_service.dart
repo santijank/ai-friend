@@ -17,6 +17,58 @@ void callbackDispatcher() {
     if (task != _taskName) return true;
 
     final apiBaseUrl = inputData?['apiBaseUrl'] ?? '';
+
+    // init plugin สำหรับ isolate นี้
+    final plugin = FlutterLocalNotificationsPlugin();
+    await plugin.initialize(
+      const InitializationSettings(
+        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      ),
+    );
+
+    final prefs = await SharedPreferences.getInstance();
+
+    // === Part 1: ตรวจ reminders ที่ถึงเวลาแล้ว ===
+    try {
+      final reminderJsonList = prefs.getStringList('pending_reminders_sp') ?? [];
+      if (reminderJsonList.isNotEmpty) {
+        final now = DateTime.now();
+        final remaining = <String>[];
+        for (final jsonStr in reminderJsonList) {
+          try {
+            final r = jsonDecode(jsonStr) as Map<String, dynamic>;
+            final remindAtStr = r['remind_at'] as String? ?? '';
+            final dt = DateTime.parse(remindAtStr.replaceAll(' ', 'T'));
+            if (dt.isBefore(now)) {
+              // ถึงเวลาแล้ว → แสดง notification!
+              await plugin.show(
+                dt.millisecondsSinceEpoch ~/ 1000,
+                '🤖 ฟ้าเตือน~',
+                r['message'] as String? ?? '',
+                const NotificationDetails(
+                  android: AndroidNotificationDetails(
+                    'reminders_v2',
+                    'Reminders',
+                    channelDescription: 'การแจ้งเตือนจากฟ้า',
+                    importance: Importance.max,
+                    priority: Priority.max,
+                    playSound: true,
+                    enableVibration: true,
+                  ),
+                ),
+              );
+            } else {
+              remaining.add(jsonStr); // ยังไม่ถึงเวลา → เก็บไว้
+            }
+          } catch (_) {
+            // skip corrupted entries
+          }
+        }
+        await prefs.setStringList('pending_reminders_sp', remaining);
+      }
+    } catch (_) {}
+
+    // === Part 2: ตรวจ critical alerts จาก backend ===
     if (apiBaseUrl.isEmpty) return true;
 
     try {
@@ -27,7 +79,6 @@ void callbackDispatcher() {
       if (alerts.isEmpty) return true;
 
       // โหลด alert IDs ที่เคยแจ้งแล้ว
-      final prefs = await SharedPreferences.getInstance();
       final seenIds = prefs.getStringList(_seenAlertsKey) ?? [];
       final seenSet = seenIds.toSet();
 
@@ -44,14 +95,6 @@ void callbackDispatcher() {
       }
 
       if (newAlerts.isEmpty) return true;
-
-      // แสดง notification สำหรับ alert ใหม่
-      final plugin = FlutterLocalNotificationsPlugin();
-      await plugin.initialize(
-        const InitializationSettings(
-          android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-        ),
-      );
 
       for (final alert in newAlerts) {
         final id = (alert['id'] as int?) ?? DateTime.now().millisecondsSinceEpoch;

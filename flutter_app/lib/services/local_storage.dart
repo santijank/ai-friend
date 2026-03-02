@@ -2,6 +2,7 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../models/message.dart';
 
 class LocalStorage {
@@ -171,6 +172,21 @@ class LocalStorage {
       );
     } catch (e) {
       debugPrint('cleanExpiredReminders error: $e');
+    }
+  }
+
+  // === SharedPreferences bridge (สำหรับ WorkManager isolate) ===
+
+  /// Sync pending reminders → SharedPreferences ให้ WorkManager เข้าถึงได้
+  static Future<void> syncRemindersToSharedPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final pending = getPendingReminders();
+      final jsonList = pending.map((r) => jsonEncode(r)).toList();
+      await prefs.setStringList('pending_reminders_sp', jsonList);
+      debugPrint('📋 Synced ${jsonList.length} reminders to SharedPrefs');
+    } catch (e) {
+      debugPrint('syncRemindersToSharedPrefs error: $e');
     }
   }
 

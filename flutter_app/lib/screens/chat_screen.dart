@@ -226,6 +226,7 @@ class _ChatScreenState extends State<ChatScreen> {
               body: reminderMessage,
               scheduledTime: dt,
             );
+            await LocalStorage.syncRemindersToSharedPrefs();
             debugPrint('Reminder saved + scheduled: $reminderMessage at $dt');
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
@@ -782,7 +783,10 @@ class _ChatScreenState extends State<ChatScreen> {
         debugPrint('Notification scheduling failed (non-fatal): $e');
       }
 
-      // 3. บันทึกลง backend (ไม่ fatal)
+      // 3. Sync ไปยัง SharedPrefs (สำหรับ WorkManager backup)
+      await LocalStorage.syncRemindersToSharedPrefs();
+
+      // 4. บันทึกลง backend (ไม่ fatal)
       try {
         await ApiService.addReminder(
           userId: LocalStorage.userId,
