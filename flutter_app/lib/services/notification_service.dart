@@ -12,6 +12,9 @@ class NotificationService {
   /// Timer-based scheduling (ทำงาน 100% ขณะแอปเปิด)
   static final Map<int, Timer> _activeTimers = {};
 
+  /// Callback เมื่อ user กดที่ notification — payload = reminder message
+  static void Function(String payload)? onNotificationTap;
+
   static Future<void> init() async {
     // ตั้ง timezone เป็น Bangkok (สำคัญมาก! ถ้าไม่ตั้ง จะใช้ UTC)
     tz_data.initializeTimeZones();
@@ -30,6 +33,12 @@ class NotificationService {
         android: androidSettings,
         iOS: iosSettings,
       ),
+      onDidReceiveNotificationResponse: (NotificationResponse response) {
+        final payload = response.payload;
+        if (payload != null && payload.isNotEmpty && onNotificationTap != null) {
+          onNotificationTap!(payload);
+        }
+      },
     );
 
     // สร้าง notification channels ล่วงหน้า (Android 8.0+)
@@ -151,6 +160,9 @@ class NotificationService {
       priority: Priority.max,
       playSound: true,
       enableVibration: true,
+      fullScreenIntent: true,
+      category: AndroidNotificationCategory.alarm,
+      visibility: NotificationVisibility.public,
     ),
     iOS: DarwinNotificationDetails(
       presentAlert: true,
@@ -178,7 +190,7 @@ class NotificationService {
     _activeTimers[id]?.cancel();
     _activeTimers[id] = Timer(delay, () async {
       try {
-        await _plugin.show(id, title, body, _reminderDetails);
+        await _plugin.show(id, title, body, _reminderDetails, payload: body);
         debugPrint('✅ Timer notification fired: $body');
       } catch (e) {
         debugPrint('❌ Timer notification failed: $e');

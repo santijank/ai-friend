@@ -11,6 +11,10 @@ import 'services/stt_service.dart';
 import 'services/theme_service.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/home_screen.dart';
+import 'screens/reminder_alert_screen.dart';
+
+/// Global navigator key — ใช้ navigate จาก notification/FCM callback
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,6 +32,24 @@ void main() async {
   await TtsService.init();
   await SttService.init();
 
+  // ตั้ง callback: กด notification → เปิดหน้าเตือน + ฟ้าพูด
+  NotificationService.onNotificationTap = (payload) {
+    navigatorKey.currentState?.push(
+      MaterialPageRoute(
+        builder: (_) => ReminderAlertScreen(message: payload),
+      ),
+    );
+  };
+
+  // ตั้ง FCM callback: foreground message → เปิดหน้าเตือน + ฟ้าพูด
+  FcmService.onReminderReceived = (message) {
+    navigatorKey.currentState?.push(
+      MaterialPageRoute(
+        builder: (_) => ReminderAlertScreen(message: message),
+      ),
+    );
+  };
+
   // เริ่ม background alert polling (แจ้งเตือนแม้ปิดแอป)
   await BackgroundAlertService.initialize(AppConfig.apiBaseUrl);
 
@@ -43,6 +65,7 @@ class AIFriendApp extends StatelessWidget {
       listenable: ThemeService(),
       builder: (context, _) {
         return MaterialApp(
+          navigatorKey: navigatorKey,
           title: 'ฟ้า AI Friend',
           debugShowCheckedModeBanner: false,
           theme: ThemeService().theme,
