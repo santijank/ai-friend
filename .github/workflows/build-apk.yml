@@ -61,17 +61,24 @@ jobs:
         working-directory: flutter_app
         run: flutter pub get
 
-      - name: Build release APK
+      - name: Build release APK (split per ABI)
         working-directory: flutter_app
         run: |
-          flutter build apk --release \
+          flutter build apk --release --split-per-abi \
             --dart-define=API_BASE_URL=${{ secrets.API_BASE_URL }}
 
-      - name: Upload APK
+      - name: Upload APK (arm64)
         uses: actions/upload-artifact@v4
         with:
-          name: ai-friend-release
-          path: flutter_app/build/app/outputs/flutter-apk/app-release.apk
+          name: ai-friend-arm64
+          path: flutter_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          retention-days: 30
+
+      - name: Upload APK (armeabi)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-friend-armeabi
+          path: flutter_app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
           retention-days: 30
 
       - name: Send APK to Telegram
@@ -79,10 +86,13 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          echo "Sending APK to Telegram chat: $TELEGRAM_CHAT_ID"
+          APK_PATH="flutter_app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk"
+          APK_SIZE=$(stat -c%s "$APK_PATH" 2>/dev/null || stat -f%z "$APK_PATH")
+          echo "APK size: $((APK_SIZE / 1024 / 1024))MB"
+          echo "Sending to chat: $TELEGRAM_CHAT_ID"
           RESPONSE=$(curl -s -w "\n%{http_code}" \
-            -F document=@flutter_app/build/app/outputs/flutter-apk/app-release.apk \
-            -F caption="AI Friend v1.6.0 — Build #${{ github.run_number }}" \
+            -F document=@"$APK_PATH" \
+            -F caption="AI Friend v1.6.0 — Build #${{ github.run_number }} (arm64)" \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument?chat_id=${TELEGRAM_CHAT_ID}")
           HTTP_CODE=$(echo "$RESPONSE" | tail -1)
           BODY=$(echo "$RESPONSE" | head -n -1)
