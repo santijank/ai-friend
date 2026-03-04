@@ -32,6 +32,8 @@ from stock_service import (
     is_stock_related_message, detect_stock_symbols_in_message,
     get_market_overview, format_market_overview_for_ai,
     get_watchlist_summary, get_watchlist_brief,
+    # Direct HTTP (bypass yfinance)
+    get_stock_price_direct, get_stock_analysis_direct,
     # Cached versions (อ่านจาก DB — ตอบทันที)
     get_stock_price_cached, get_stock_analysis_cached,
     get_market_overview_cached, get_watchlist_summary_cached,
@@ -679,6 +681,24 @@ async def debug_test_ai():
             }
     except Exception as e:
         return {"status": "error", "detail": str(e)}
+
+
+@app.get("/debug/test-stock-direct")
+async def debug_test_stock_direct():
+    """ทดสอบ Direct HTTP Yahoo Finance — ไม่ผ่าน yfinance"""
+    test_symbols = ['PTT.BK', 'AAPL', '^GSPC']
+    results = {}
+    for sym in test_symbols:
+        try:
+            price = get_stock_price_direct(sym)
+            results[sym] = {
+                "status": "ok" if price else "no_data",
+                "price": price.get("price") if price else None,
+                "change_pct": price.get("change_pct") if price else None,
+            }
+        except Exception as e:
+            results[sym] = {"status": "error", "detail": str(e)}
+    return {"direct_http_test": results}
 
 
 @app.get("/debug/db-stats")

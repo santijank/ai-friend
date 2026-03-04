@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import yfinance as yf
+import httpx
+import pandas as pd
 
 import database as db
 import push_sender
@@ -54,11 +56,231 @@ def format_symbol(user_input: str) -> tuple[str, str]:
     return symbol, symbol
 
 
+# ==================== Yahoo Finance Direct HTTP (bypass yfinance) ====================
+# yfinance ถูก block บน cloud servers (Render, Heroku, AWS)
+# ใช้ direct HTTP ไปที่ Yahoo Finance v8 chart API แทน — endpoint นี้มักไม่ถูก block
+
+def _safe_float(val, decimals=2):
+    """Convert to rounded float, return None if NaN/None"""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        if pd.isna(f):
+            return None
+        return round(f, decimals)
+    except (TypeError, ValueError):
+        return None
+
+
+def _yahoo_direct_fetch(symbol: str, range_str: str = '6mo', interval: str = '1d') -> dict | None:
+    """
+    ดึงข้อมูลหุ้นจาก Yahoo Finance v8 chart API โดยตรง (ไม่ผ่าน yfinance)
+    ใช้ได้บน cloud servers ที่ yfinance ถูก block
+    Returns raw chart result dict or None
+    """
+    urls = [
+        f'https://query1.finance.yahoo.com/v8/finance/chart/{symbol}',
+        f'https://query2.finance.yahoo.com/v8/finance/chart/{symbol}',
+    ]
+
+    params = {
+        'range': range_str,
+        'interval': interval,
+        'includePrePost': 'false',
+    }
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'application/json,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://finance.yahoo.com/',
+        'Origin': 'https://finance.yahoo.com',
+    }
+
+    for url in urls:
+        try:
+            with httpx.Client(headers=headers, timeout=15.0, follow_redirects=True) as client:
+                resp = client.get(url, params=params)
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    results = data.get('chart', {}).get('result')
+                    if results and len(results) > 0:
+                        logger.debug(f"Yahoo direct OK: {symbol}")
+                        return results[0]
+
+                logger.debug(f"Yahoo direct: HTTP {resp.status_code} for {symbol}")
+        except Exception as e:
+            logger.debug(f"Yahoo direct error: {symbol}: {e}")
+
+    return None
+
+
+def get_stock_price_direct(symbol: str) -> dict | None:
+    """ดึงราคาหุ้นผ่าน Direct HTTP API (ไม่ใช้ yfinance)"""
+    chart = _yahoo_direct_fetch(symbol, range_str='5d', interval='1d')
+    if not chart:
+        return None
+
+    meta = chart.get('meta', {})
+    price = meta.get('regularMarketPrice', 0)
+    prev_close = meta.get('chartPreviousClose') or meta.get('previousClose', 0)
+
+    if not price or price <= 0:
+        return None
+
+    change = price - prev_close if prev_close else 0
+    change_pct = (change / prev_close * 100) if prev_close else 0
+
+    currency = meta.get('currency', '')
+    if not currency:
+        currency = 'THB' if symbol.endswith('.BK') else 'USD'
+
+    return {
+        "symbol": symbol,
+        "name": meta.get('shortName') or meta.get('longName') or symbol,
+        "price": round(price, 2),
+        "previous_close": round(prev_close, 2),
+        "change": round(change, 2),
+        "change_pct": round(change_pct, 2),
+        "currency": currency,
+        "market_state": meta.get('marketState', 'UNKNOWN'),
+    }
+
+
+def get_stock_analysis_direct(symbol: str) -> dict | None:
+    """วิเคราะห์หุ้นเชิงลึกผ่าน Direct HTTP API (ไม่ใช้ yfinance)"""
+    chart = _yahoo_direct_fetch(symbol, range_str='6mo', interval='1d')
+    if not chart:
+        return None
+
+    meta = chart.get('meta', {})
+    indicators = chart.get('indicators', {})
+    quotes = indicators.get('quote', [{}])[0]
+
+    closes_raw = quotes.get('close', [])
+    highs_raw = quotes.get('high', [])
+    lows_raw = quotes.get('low', [])
+    volumes_raw = quotes.get('volume', [])
+
+    # Convert to pandas Series (drop None/NaN)
+    closes = pd.Series(closes_raw).dropna().reset_index(drop=True)
+    highs = pd.Series(highs_raw).dropna().reset_index(drop=True)
+    lows = pd.Series(lows_raw).dropna().reset_index(drop=True)
+    volumes = pd.Series(volumes_raw).fillna(0).reset_index(drop=True)
+
+    if len(closes) < 20:
+        logger.warning(f"Not enough data for direct analysis: {symbol} ({len(closes)} points)")
+        return None
+
+    current = float(closes.iloc[-1])
+    prev_close = float(closes.iloc[-2]) if len(closes) >= 2 else current
+
+    # --- Moving Averages ---
+    sma_20 = _safe_float(closes.rolling(20).mean().iloc[-1]) if len(closes) >= 20 else None
+    sma_50 = _safe_float(closes.rolling(50).mean().iloc[-1]) if len(closes) >= 50 else None
+    sma_200 = _safe_float(closes.rolling(200).mean().iloc[-1]) if len(closes) >= 200 else None
+
+    # --- RSI (14-day) ---
+    rsi = _calculate_rsi(closes, period=14)
+
+    # --- Volume Analysis ---
+    avg_vol_20 = _safe_float(volumes.rolling(20).mean().iloc[-1], 0) if len(volumes) >= 20 else None
+    current_vol = float(volumes.iloc[-1]) if len(volumes) > 0 else 0
+    vol_ratio = _safe_float(current_vol / avg_vol_20) if avg_vol_20 and avg_vol_20 > 0 else None
+
+    # --- Price Performance ---
+    perf_1w = _calc_performance(closes, 5)
+    perf_1m = _calc_performance(closes, 22)
+    perf_3m = _calc_performance(closes, 66)
+
+    # --- Support & Resistance ---
+    support = _safe_float(lows.tail(30).min()) if len(lows) > 0 else None
+    resistance = _safe_float(highs.tail(30).max()) if len(highs) > 0 else None
+
+    # --- 52-week High/Low ---
+    high_52w = _safe_float(highs.max())
+    low_52w = _safe_float(lows.min())
+
+    # --- Trend Detection ---
+    trend = "sideways"
+    if sma_20 and sma_50:
+        if current > sma_20 > sma_50:
+            trend = "uptrend"
+        elif current < sma_20 < sma_50:
+            trend = "downtrend"
+
+    # --- Signal Summary ---
+    signals = []
+    if rsi is not None:
+        if rsi > 70:
+            signals.append("RSI > 70 (Overbought — อาจปรับตัวลง)")
+        elif rsi < 30:
+            signals.append("RSI < 30 (Oversold — อาจเด้งกลับ)")
+    if sma_20 and sma_50 and len(closes) >= 51:
+        sma20_series = closes.rolling(20).mean()
+        sma50_series = closes.rolling(50).mean()
+        sma20_prev = _safe_float(sma20_series.iloc[-2])
+        sma50_prev = _safe_float(sma50_series.iloc[-2])
+        if sma20_prev and sma50_prev:
+            if sma_20 > sma_50 and sma20_prev <= sma50_prev:
+                signals.append("Golden Cross (SMA20 ตัด SMA50 ขึ้น — สัญญาณบวก)")
+            elif sma_20 < sma_50 and sma20_prev >= sma50_prev:
+                signals.append("Death Cross (SMA20 ตัด SMA50 ลง — สัญญาณลบ)")
+    if vol_ratio and vol_ratio > 2.0:
+        signals.append(f"Volume สูงผิดปกติ ({vol_ratio:.1f}x เฉลี่ย)")
+    if support and current <= support * 1.02:
+        signals.append(f"ใกล้แนวรับ {support}")
+    if resistance and current >= resistance * 0.98:
+        signals.append(f"ใกล้แนวต้าน {resistance}")
+
+    currency = meta.get('currency', '')
+    if not currency:
+        currency = 'THB' if symbol.endswith('.BK') else 'USD'
+
+    return {
+        "symbol": symbol,
+        "name": meta.get('shortName') or meta.get('longName') or symbol,
+        "currency": currency,
+        "sector": "",
+        "industry": "",
+        "price": round(current, 2),
+        "prev_close": round(prev_close, 2),
+        "change_pct": round((current - prev_close) / prev_close * 100, 2) if prev_close else 0,
+        "market_cap": None,
+        "pe_ratio": None,
+        "div_yield": None,
+        "sma_20": sma_20,
+        "sma_50": sma_50,
+        "sma_200": sma_200,
+        "rsi_14": _safe_float(rsi, 1),
+        "volume": int(current_vol) if current_vol else None,
+        "avg_volume_20d": int(avg_vol_20) if avg_vol_20 else None,
+        "volume_ratio": vol_ratio,
+        "support_30d": support,
+        "resistance_30d": resistance,
+        "high_52w": high_52w,
+        "low_52w": low_52w,
+        "perf_1w": perf_1w,
+        "perf_1m": perf_1m,
+        "perf_3m": perf_3m,
+        "trend": trend,
+        "signals": signals,
+    }
+
+
 def get_stock_price(symbol: str) -> dict | None:
     """
-    ดึงราคาหุ้นปัจจุบันจาก Yahoo Finance
+    ดึงราคาหุ้นปัจจุบัน — ลอง Direct HTTP ก่อน, fallback yfinance
     Returns: {symbol, name, price, change, change_pct, currency, market_state}
     """
+    # Layer 1: Direct HTTP (works on cloud servers like Render)
+    direct = get_stock_price_direct(symbol)
+    if direct:
+        return direct
+
+    # Layer 2: yfinance (fallback for local development)
     try:
         ticker = yf.Ticker(symbol)
         info = ticker.fast_info
@@ -102,9 +324,15 @@ def get_stock_price(symbol: str) -> dict | None:
 
 def get_stock_analysis(symbol: str) -> dict | None:
     """
-    วิเคราะห์หุ้นเชิงลึก — SMA, RSI, Volume Profile, แนวรับ/แนวต้าน
-    ส่งข้อมูลนี้ให้ AI ใช้วิเคราะห์และแนะนำ
+    วิเคราะห์หุ้นเชิงลึก — ลอง Direct HTTP ก่อน, fallback yfinance
+    SMA, RSI, Volume Profile, แนวรับ/แนวต้าน
     """
+    # Layer 1: Direct HTTP (works on cloud servers)
+    direct = get_stock_analysis_direct(symbol)
+    if direct:
+        return direct
+
+    # Layer 2: yfinance (fallback for local development)
     try:
         ticker = yf.Ticker(symbol)
 
@@ -353,7 +581,7 @@ def detect_stock_symbols_in_message(message: str) -> list[str]:
 def get_market_overview() -> dict | None:
     """
     ดึงสถานะตลาดรวม — SET Index, S&P 500, ทองคำ, น้ำมัน
-    ให้ AI รู้ภาพรวมตลาดก่อนแนะนำ
+    ใช้ get_stock_price() ซึ่งลอง Direct HTTP ก่อน yfinance
     """
     indices = {
         "^SET.BK": "SET Index",
@@ -365,15 +593,11 @@ def get_market_overview() -> dict | None:
     results = {}
     for sym, name in indices.items():
         try:
-            ticker = yf.Ticker(sym)
-            info = ticker.fast_info
-            price = info.get("lastPrice") or info.get("last_price", 0)
-            prev = info.get("previousClose") or info.get("previous_close", 0)
-            if price and prev:
-                change_pct = (price - prev) / prev * 100
+            data = get_stock_price(sym)
+            if data:
                 results[name] = {
-                    "price": round(price, 2),
-                    "change_pct": round(change_pct, 2),
+                    "price": data["price"],
+                    "change_pct": data["change_pct"],
                 }
         except Exception as e:
             logger.debug(f"Market overview skip {sym}: {e}")
