@@ -85,13 +85,17 @@ class _VoiceModeOverlayState extends State<VoiceModeOverlay>
 
     debugPrint('JARVIS: startListening (silence=$_silenceCount, sttErr=$_sttErrorCount)');
 
+    bool hasFinalResult = false;
+
     await SttService.startListening(
       onResult: (text) {
-        if (!mounted) return;
+        if (!mounted || hasFinalResult) return;
         _sttErrorCount = 0; // reset error count on any result
         setState(() => _transcript = text);
       },
       onDone: () {
+        if (hasFinalResult) return;
+        hasFinalResult = true;
         if (!mounted || !_isActive) return;
         debugPrint('JARVIS: STT done, transcript="${_transcript}"');
         _onSpeechDone();
@@ -111,6 +115,15 @@ class _VoiceModeOverlayState extends State<VoiceModeOverlay>
       },
       listenFor: const Duration(seconds: 15),
     );
+
+    // Fallback: ถ้า speech engine หยุดฟังเองโดยไม่ trigger onDone
+    Future.delayed(const Duration(seconds: 16), () {
+      if (!hasFinalResult && _isActive && mounted && _state == VoiceModeState.listening) {
+        debugPrint('JARVIS: listen timeout fallback');
+        hasFinalResult = true;
+        _onSpeechDone();
+      }
+    });
   }
 
   void _onSpeechDone() {
