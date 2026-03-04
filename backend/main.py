@@ -26,6 +26,13 @@ from memory import process_memory_update, get_memory_summary
 from morning_brief import generate_morning_brief, generate_night_wrap
 from news_fetcher import run_alert_fetch_job
 from push_sender import init_firebase, send_push_to_user
+from stock_service import (
+    get_stock_price, check_stock_alerts, format_symbol,
+    get_stock_analysis, format_analysis_for_ai,
+    is_stock_related_message, detect_stock_symbols_in_message,
+    get_market_overview, format_market_overview_for_ai,
+    get_watchlist_summary, get_watchlist_brief,
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -58,8 +65,18 @@ async def lifespan(app: FastAPI):
         max_instances=1,
         misfire_grace_time=60,
     )
+    reminder_scheduler.add_job(
+        check_stock_alerts,
+        trigger="interval",
+        minutes=5,
+        id="stock_check",
+        name="Check stock price alerts",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=60,
+    )
     reminder_scheduler.start()
-    print("[OK] Alert scheduler started (every 7 minutes)")
+    print("[OK] Alert scheduler started (alerts: 7min, stocks: 5min)")
 
     # ดึงข้อมูลทันทีตอน start
     try:
@@ -147,7 +164,12 @@ class ChatResponse(BaseModel):
     has_reminder: bool = False
     reminder_message: str | None = None
     reminder_time: str | None = None
-    debug_reminder_raw: str | None = None  # debug: แสดง raw reminder จาก AI
+    debug_reminder_raw: str | None = None
+    # Stock alert fields
+    stock_symbol: str | None = None
+    stock_price: float | None = None
+    stock_change_pct: float | None = None
+    stock_currency: str | None = None
 
 
 class AlertItem(BaseModel):
@@ -193,6 +215,13 @@ class SettingsRequest(BaseModel):
 class DeviceTokenRequest(BaseModel):
     user_id: str
     fcm_token: str
+
+
+class StockWatchRequest(BaseModel):
+    user_id: str
+    symbol: str
+    alert_type: str = "change_pct"  # price_above, price_below, change_pct
+    target_value: float = 3.0       # ราคาเป้า หรือ % เปลี่ยนแปลง
 
 
 # ==================== API Endpoints ====================
@@ -304,6 +333,35 @@ async def chat(req: ChatRequest):
 
         # ========== ชั้น 2: Claude Haiku + Full Context ==========
         recent_messages = db.get_recent_messages(req.user_id, limit=6)
+
+        # Smart Stock Injection: ตรวจจับข้อความเกี่ยวกับหุ้น → ดึงข้อมูลวิเคราะห์ให้ AI
+        stock_context = None
+        if is_stock_related_message(req.message):
+            context_parts = []
+
+            # 1. ข้อมูลวิเคราะห์หุ้นที่ถาม (ถ้ามีชื่อหุ้นเจาะจง)
+            symbols = detect_stock_symbols_in_message(req.message)
+            if symbols:
+                for sym in symbols[:2]:
+                    yahoo_sym, _ = format_symbol(sym)
+                    analysis = get_stock_analysis(yahoo_sym)
+                    if analysis:
+                        context_parts.append(format_analysis_for_ai(analysis))
+
+            # 2. ภาพรวมตลาด
+            market = get_market_overview()
+            if market:
+                context_parts.append(format_market_overview_for_ai(market))
+
+            # 3. Watchlist ของผู้ใช้ (ให้ AI รู้ว่าติดตามหุ้นอะไรอยู่)
+            watchlist = get_watchlist_summary(req.user_id)
+            if watchlist:
+                context_parts.append(watchlist)
+
+            if context_parts:
+                stock_context = "\n\n".join(context_parts)
+                logger.info(f"📊 Injected full stock context: symbols={symbols}, market=True, watchlist={'Yes' if watchlist else 'No'}")
+
         ai_result = await call_haiku(
             message=req.message,
             user_name=user_name,
@@ -311,6 +369,7 @@ async def chat(req: ChatRequest):
             memory=memory,
             recent_messages=recent_messages,
             user_context=user_context,
+            stock_context=stock_context,
         )
 
         reply = ai_result["reply"]
@@ -348,6 +407,36 @@ async def chat(req: ChatRequest):
                 logger.warning(f"⚠️ parse_reminder_text FAILED for: '{raw_reminder}'")
         else:
             logger.info(f"ℹ️ No reminder (raw_reminder_line='{raw_reminder_line}')")
+
+        # ========== จัดการ Stock Alert ==========
+        raw_stock = ai_result.get("stock_alert")
+        if raw_stock:
+            try:
+                parts = raw_stock.split("|")
+                if len(parts) >= 3:
+                    sym_input = parts[0].strip()
+                    alert_type = parts[1].strip()
+                    target_val = float(parts[2].strip())
+
+                    yahoo_sym, display_name = format_symbol(sym_input)
+
+                    # ดึงราคาปัจจุบัน
+                    price_data = get_stock_price(yahoo_sym)
+                    if price_data:
+                        db.add_stock_alert(
+                            req.user_id, yahoo_sym, display_name,
+                            alert_type, target_val,
+                        )
+                        logger.info(f"📊 Stock alert added: {display_name} ({yahoo_sym}) {alert_type} {target_val}")
+
+                        response.stock_symbol = display_name
+                        response.stock_price = price_data["price"]
+                        response.stock_change_pct = price_data["change_pct"]
+                        response.stock_currency = price_data["currency"]
+                    else:
+                        logger.warning(f"⚠️ Could not get price for {yahoo_sym}")
+            except Exception as e:
+                logger.error(f"Stock alert processing error: {e}")
 
         return response
 
@@ -433,6 +522,84 @@ async def register_device_token(req: DeviceTokenRequest):
     db.save_device_token(req.user_id, req.fcm_token)
     logger.info(f"FCM token registered for user {req.user_id}: {req.fcm_token[:20]}...")
     return {"status": "ok", "message": "Token registered"}
+
+
+# ==================== Stock Watchlist ====================
+
+@app.get("/stocks/market")
+async def market_overview():
+    """ภาพรวมตลาด — SET Index, S&P 500, Gold, Oil"""
+    data = get_market_overview()
+    if not data:
+        raise HTTPException(status_code=503, detail="ไม่สามารถดึงข้อมูลตลาดได้")
+    return data
+
+
+@app.get("/stocks/price/{symbol}")
+async def stock_price(symbol: str):
+    """ดึงราคาหุ้นปัจจุบัน"""
+    yahoo_sym, display_name = format_symbol(symbol)
+    data = get_stock_price(yahoo_sym)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"ไม่พบข้อมูลหุ้น {symbol}")
+    return data
+
+
+@app.get("/stocks/analysis/{symbol}")
+async def stock_analysis(symbol: str):
+    """วิเคราะห์หุ้นเชิงลึก — Technical + Fundamental"""
+    yahoo_sym, display_name = format_symbol(symbol)
+    data = get_stock_analysis(yahoo_sym)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"ไม่พบข้อมูลหุ้น {symbol}")
+    return data
+
+
+@app.get("/stocks/watchlist/{user_id}")
+async def stock_watchlist(user_id: str):
+    """ดู watchlist ของ user"""
+    user = db.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    alerts = db.get_user_stock_alerts(user_id)
+    return {"count": len(alerts), "watchlist": alerts}
+
+
+@app.post("/stocks/watch")
+async def add_stock_watch(req: StockWatchRequest):
+    """เพิ่มหุ้นเข้า watchlist"""
+    user = db.get_user(req.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    yahoo_sym, display_name = format_symbol(req.symbol)
+
+    # ตรวจสอบว่า symbol ถูกต้อง
+    price_data = get_stock_price(yahoo_sym)
+    if not price_data:
+        raise HTTPException(status_code=404, detail=f"ไม่พบข้อมูลหุ้น {req.symbol}")
+
+    alert_id = db.add_stock_alert(
+        req.user_id, yahoo_sym, display_name,
+        req.alert_type, req.target_value,
+    )
+
+    return {
+        "status": "ok",
+        "alert_id": alert_id,
+        "symbol": yahoo_sym,
+        "display_name": display_name,
+        "current_price": price_data["price"],
+        "alert_type": req.alert_type,
+        "target_value": req.target_value,
+    }
+
+
+@app.delete("/stocks/watch/{alert_id}")
+async def remove_stock_watch(alert_id: int):
+    """ลบหุ้นออกจาก watchlist"""
+    db.delete_stock_alert(alert_id)
+    return {"status": "ok"}
 
 
 # ==================== Health Check ====================
@@ -625,7 +792,8 @@ async def morning_brief(user_id: str):
 
     reminders = db.get_pending_reminders(user_id)
     routines = db.get_routines(user_id)
-    brief = generate_morning_brief(user["name"], reminders, routines)
+    stock_brief = get_watchlist_brief(user_id)
+    brief = generate_morning_brief(user["name"], reminders, routines, stock_brief)
     return {"message": brief}
 
 

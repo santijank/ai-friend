@@ -121,6 +121,22 @@ def init_db():
         );
 
         CREATE INDEX IF NOT EXISTS idx_device_tokens_user ON device_tokens(user_id);
+
+        CREATE TABLE IF NOT EXISTS stock_watchlist (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            alert_type TEXT NOT NULL,
+            target_value REAL,
+            last_price REAL,
+            last_notified_at TIMESTAMP,
+            active BOOLEAN DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_stock_watchlist_user ON stock_watchlist(user_id, active);
     """)
     conn.commit()
     conn.close()
@@ -495,5 +511,75 @@ def delete_fcm_token(fcm_token: str):
     """ลบ token ที่ใช้ไม่ได้แล้ว (expired/unregistered)"""
     conn = get_db()
     conn.execute("DELETE FROM device_tokens WHERE fcm_token = ?", (fcm_token,))
+    conn.commit()
+    conn.close()
+
+
+# ==================== Stock Watchlist ====================
+
+def add_stock_alert(user_id: str, symbol: str, display_name: str,
+                    alert_type: str, target_value: float) -> int:
+    """เพิ่มหุ้นเข้า watchlist — return id"""
+    conn = get_db()
+    cursor = conn.execute(
+        """INSERT INTO stock_watchlist
+           (user_id, symbol, display_name, alert_type, target_value)
+           VALUES (?, ?, ?, ?, ?)""",
+        (user_id, symbol, display_name, alert_type, target_value),
+    )
+    alert_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return alert_id
+
+
+def get_user_stock_alerts(user_id: str) -> list[dict]:
+    """ดึง watchlist ของ user"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM stock_watchlist WHERE user_id = ? AND active = 1 ORDER BY created_at DESC",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_all_active_stock_alerts() -> list[dict]:
+    """ดึง stock alerts ทั้งหมดที่ active — สำหรับ scheduler"""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT * FROM stock_watchlist WHERE active = 1"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_stock_price(alert_id: int, price: float):
+    """อัพเดทราคาล่าสุด"""
+    conn = get_db()
+    conn.execute(
+        "UPDATE stock_watchlist SET last_price = ? WHERE id = ?",
+        (price, alert_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def mark_stock_notified(alert_id: int):
+    """บันทึกว่าแจ้งเตือนแล้ว"""
+    conn = get_db()
+    now = datetime.now(BKK).isoformat()
+    conn.execute(
+        "UPDATE stock_watchlist SET last_notified_at = ? WHERE id = ?",
+        (now, alert_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_stock_alert(alert_id: int):
+    """ลบหุ้นออกจาก watchlist (soft delete)"""
+    conn = get_db()
+    conn.execute("UPDATE stock_watchlist SET active = 0 WHERE id = ?", (alert_id,))
     conn.commit()
     conn.close()

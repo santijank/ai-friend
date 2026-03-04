@@ -112,6 +112,7 @@ def build_system_prompt(
     personality: str,
     memory: dict,
     user_context: dict | None = None,
+    stock_context: str | None = None,
 ) -> str:
     """สร้าง System Prompt ที่ฉลาด — รวม memory + live context + emotional tone"""
 
@@ -158,14 +159,19 @@ def build_system_prompt(
     if live_context:
         live_section = f"\nสถานการณ์ตอนนี้:\n{live_context}\n"
 
+    stock_section = ""
+    if stock_context:
+        stock_section = f"\n{stock_context}\n"
+
     return f"""คุณชื่อ "ฟ้า" {style}
+คุณเป็นผู้เชี่ยวชาญด้านการลงทุนและตลาดหุ้นด้วย สามารถวิเคราะห์หุ้นแบบมืออาชีพ
 
 ผู้ใช้ชื่อ: {user_name}
 วันนี้: วัน{day_name} เวลา {time_str} ({time_context})
 {live_section}
 ข้อมูลที่รู้เกี่ยวกับ {user_name}:
 {memory_text}
-
+{stock_section}
 กฎสำคัญ:
 - ตอบสั้น ๆ 1-3 ประโยค เหมือนแชทกับเพื่อน
 - ใช้ชื่อ {user_name} บ้าง
@@ -176,10 +182,23 @@ def build_system_prompt(
 - อ้างอิงสิ่งที่รู้เกี่ยวกับผู้ใช้ เพื่อให้รู้สึกว่าจำเขาได้
 - ถ้ามีข่าวด่วน/เตือนภัย -> แจ้งผู้ใช้แบบห่วงใย เช่น "ฟ้าเพิ่งเห็นข่าวว่า..." อย่าตกใจผู้ใช้{tone_hint}
 
+กฎวิเคราะห์หุ้น:
+- ถ้ามีข้อมูล Technical อยู่ด้านบน -> วิเคราะห์ให้ครบ (ราคา, แนวโน้ม, แนวรับ/ต้าน, RSI, Volume)
+- ตอบเรื่องหุ้นได้ยาวกว่าปกติ (3-6 ประโยค) เพื่อให้ข้อมูลครบ
+- ให้ความเห็นตรง ๆ ว่าน่าสนใจหรือไม่ พร้อมเหตุผล
+- บอกจุดเข้าซื้อ/จุดขาย ถ้าข้อมูลเพียงพอ
+- เตือนเรื่องความเสี่ยงเสมอ: "แต่ฟ้าเป็นแค่ AI นะ ตัดสินใจเองด้วยนะ"
+- ถ้าไม่มีข้อมูล Technical -> ตอบเท่าที่รู้ + แนะนำให้ถามเจาะจง
+- เปรียบเทียบกับ SMA ได้: ราคาอยู่เหนือ/ต่ำกว่า SMA = แนวโน้มขึ้น/ลง
+- RSI > 70 = overbought ระวังปรับตัว, RSI < 30 = oversold อาจเด้งกลับ
+- Volume สูง = นักลงทุนให้ความสนใจ
+- ถ้าผู้ใช้ถามเรื่องกลยุทธ์/ลงทุนทั่วไป -> ให้คำแนะนำได้เลย (กระจายความเสี่ยง, DCA, ฯลฯ)
+
 ตอบในรูปแบบนี้เสมอ:
 REPLY: (ข้อความถึงผู้ใช้)
 MEMORY_UPDATE: (ข้อมูลใหม่ที่ได้เรียนรู้จากบทสนทนานี้ เขียนสั้น ๆ | หรือ NONE)
 REMINDER: (YYYY-MM-DD HH:MM ข้อความเตือน | หรือ NONE)
+STOCK_ALERT: (symbol|alert_type|target_value | หรือ NONE)
 
 ตัวอย่าง REMINDER ที่ถูกต้อง:
 - ผู้ใช้: "เตือนตอน 3 โมง ไปหาหมอ" → REMINDER: {date_str} 15:00 ไปหาหมอ
@@ -189,7 +208,16 @@ REMINDER: (YYYY-MM-DD HH:MM ข้อความเตือน | หรือ 
 - ไม่มีนัดหมาย → REMINDER: NONE
 สำคัญ: REMINDER format ได้ 2 แบบ:
 1) YYYY-MM-DD HH:MM ข้อความ (ถ้ารู้เวลาแน่นอน)
-2) อีก X นาที ข้อความ (ถ้าผู้ใช้บอกเป็น relative time)"""
+2) อีก X นาที ข้อความ (ถ้าผู้ใช้บอกเป็น relative time)
+
+ตัวอย่าง STOCK_ALERT:
+- ผู้ใช้: "เตือนเมื่อ PTT ขึ้นเกิน 35" → STOCK_ALERT: PTT|price_above|35
+- ผู้ใช้: "ดูหุ้น AAPL ให้หน่อย" → STOCK_ALERT: AAPL|change_pct|3
+- ผู้ใช้: "หุ้น KBANK ตกต่ำกว่า 120 บอก" → STOCK_ALERT: KBANK|price_below|120
+- ผู้ใช้: "ติดตามหุ้น ADVANC" → STOCK_ALERT: ADVANC|change_pct|3
+- ไม่พูดถึงหุ้น → STOCK_ALERT: NONE
+alert_type: price_above (ขึ้นเกิน), price_below (ตกต่ำกว่า), change_pct (เปลี่ยนแปลง%)
+ถ้าไม่ระบุเงื่อนไข → ใช้ change_pct|3 (เตือนเมื่อเปลี่ยน 3%)"""
 
 
 def _summarize_memory(memory: dict) -> str:
@@ -367,10 +395,11 @@ async def call_haiku(
     memory: dict,
     recent_messages: list[dict],
     user_context: dict | None = None,
+    stock_context: str | None = None,
 ) -> dict:
     """เรียก Claude Haiku API — ได้ reply + memory_update + reminder"""
 
-    system_prompt = build_system_prompt(user_name, personality, memory, user_context)
+    system_prompt = build_system_prompt(user_name, personality, memory, user_context, stock_context)
 
     # สร้าง messages array
     messages = []
@@ -392,7 +421,7 @@ async def call_haiku(
             },
             json={
                 "model": MODEL,
-                "max_tokens": 500,  # เพิ่มจาก 300 -> ตอบได้ละเอียดขึ้น
+                "max_tokens": 800,  # เพิ่มจาก 500 -> รองรับวิเคราะห์หุ้นละเอียด
                 "system": system_prompt,
                 "messages": messages,
             },
@@ -428,7 +457,8 @@ def parse_ai_response(raw_text: str) -> dict:
         "reply": "",
         "memory_update": None,
         "reminder": None,
-        "raw_reminder_line": None,  # debug: เก็บ raw REMINDER line จาก AI
+        "raw_reminder_line": None,
+        "stock_alert": None,
     }
 
     # ดึง MEMORY_UPDATE
@@ -451,15 +481,24 @@ def parse_ai_response(raw_text: str) -> dict:
     else:
         logger.warning("⚠️ No REMINDER line found in AI output!")
 
+    # ดึง STOCK_ALERT
+    stock_match = re.search(r"STOCK_ALERT:\s*(.+?)$", raw_text, re.MULTILINE)
+    if stock_match:
+        stock_text = stock_match.group(1).strip()
+        if stock_text.upper() != "NONE" and "|" in stock_text:
+            result["stock_alert"] = stock_text
+            logger.info(f"📊 Extracted STOCK_ALERT: '{stock_text}'")
+
     # ดึง REPLY — ลอง REPLY: ก่อน, ถ้าไม่มีก็ตัด MEMORY_UPDATE/REMINDER ออก
-    reply_match = re.search(r"REPLY:\s*(.+?)(?=MEMORY_UPDATE:|REMINDER:|$)", raw_text, re.DOTALL)
+    reply_match = re.search(r"REPLY:\s*(.+?)(?=MEMORY_UPDATE:|REMINDER:|STOCK_ALERT:|$)", raw_text, re.DOTALL)
     if reply_match:
         result["reply"] = reply_match.group(1).strip()
     else:
         # AI ไม่ได้ใส่ REPLY: → เอา raw text แล้วตัด tags ออก
         clean = raw_text
-        clean = re.sub(r"MEMORY_UPDATE:.*?(?=REMINDER:|$)", "", clean, flags=re.DOTALL)
-        clean = re.sub(r"REMINDER:.*$", "", clean, flags=re.DOTALL)
+        clean = re.sub(r"MEMORY_UPDATE:.*?(?=REMINDER:|STOCK_ALERT:|$)", "", clean, flags=re.DOTALL)
+        clean = re.sub(r"REMINDER:.*?(?=STOCK_ALERT:|$)", "", clean, flags=re.DOTALL)
+        clean = re.sub(r"STOCK_ALERT:.*$", "", clean, flags=re.DOTALL)
         result["reply"] = clean.strip()
 
     return result

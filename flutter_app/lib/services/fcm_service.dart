@@ -7,6 +7,25 @@ import 'package:http/http.dart' as http;
 import '../config.dart';
 import 'local_storage.dart';
 
+/// Notification details สำหรับ stock alert
+const _stockNotificationDetails = NotificationDetails(
+  android: AndroidNotificationDetails(
+    'stock_alerts',
+    'Stock Alerts',
+    channelDescription: 'แจ้งเตือนราคาหุ้น',
+    importance: Importance.high,
+    priority: Priority.high,
+    playSound: true,
+    enableVibration: true,
+    category: AndroidNotificationCategory.status,
+    visibility: NotificationVisibility.public,
+  ),
+  iOS: DarwinNotificationDetails(
+    presentAlert: true,
+    presentSound: true,
+  ),
+);
+
 /// Notification details สำหรับ reminder — fullScreenIntent เปิดจอ + แสดงทับจอล็อค
 const _reminderNotificationDetails = NotificationDetails(
   android: AndroidNotificationDetails(
@@ -34,10 +53,11 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   final data = message.data;
   debugPrint('FCM background: type=${data['type']}, body=${data['body']}');
 
-  if (data['type'] == 'reminder') {
-    final title = data['title'] ?? '🤖 ฟ้าเตือน~';
-    final body = data['body'] ?? '';
+  final type = data['type'];
+  final title = data['title'] ?? '';
+  final body = data['body'] ?? '';
 
+  if (type == 'reminder' || type == 'stock_alert') {
     // Init plugin ใน isolate (ต้อง init ใหม่เพราะอยู่คนละ isolate กับ main)
     final plugin = FlutterLocalNotificationsPlugin();
     await plugin.initialize(
@@ -46,15 +66,18 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
       ),
     );
 
-    // สร้าง local notification + fullScreenIntent → ปลุกจอ + เปิดแอป
+    final details = type == 'stock_alert'
+        ? _stockNotificationDetails
+        : _reminderNotificationDetails;
+
     await plugin.show(
       DateTime.now().millisecondsSinceEpoch ~/ 1000,
-      title,
+      title.isEmpty ? (type == 'stock_alert' ? '📊 แจ้งเตือนหุ้น' : '🤖 ฟ้าเตือน~') : title,
       body,
-      _reminderNotificationDetails,
+      details,
       payload: body,
     );
-    debugPrint('✅ Background: created local notification with fullScreenIntent');
+    debugPrint('✅ Background: created $type notification');
   }
 }
 
@@ -63,6 +86,9 @@ class FcmService {
 
   /// Callback เมื่อได้รับ reminder ขณะ app เปิดอยู่ → เปิดหน้าเตือน + พูด
   static void Function(String message)? onReminderReceived;
+
+  /// Callback เมื่อได้รับ stock alert ขณะ app เปิดอยู่
+  static void Function(String title, String body)? onStockAlertReceived;
 
   /// เริ่มต้น FCM — เรียกหลัง Firebase.initializeApp()
   static Future<void> init() async {
@@ -127,30 +153,40 @@ class FcmService {
     }
   }
 
-  /// Foreground: แอปเปิดอยู่ → เปิดหน้าเตือนเต็มจอ + ฟ้าพูดทันที
+  /// Foreground: แอปเปิดอยู่ → แจ้งเตือนตาม type
   static void _handleForegroundMessage(RemoteMessage message) {
-    // อ่านจาก data (backend ส่ง data-only message)
     final data = message.data;
+    final type = data['type'] ?? 'reminder';
     final body = data['body'] ?? message.notification?.body ?? '';
     final title = data['title'] ?? message.notification?.title ?? '';
 
     if (body.isEmpty) return;
-    debugPrint('FCM foreground: $title — $body');
+    debugPrint('FCM foreground: type=$type, $title — $body');
 
-    // ถ้ามี callback → เปิดหน้าเตือนเต็มจอ + ฟ้าพูด (ไม่ต้องกด notification)
+    if (type == 'stock_alert') {
+      // Stock alert → callback หรือ notification
+      if (onStockAlertReceived != null) {
+        onStockAlertReceived!(title, body);
+        return;
+      }
+      final plugin = FlutterLocalNotificationsPlugin();
+      plugin.show(
+        message.hashCode, title, body,
+        _stockNotificationDetails, payload: body,
+      );
+      return;
+    }
+
+    // Reminder → เปิดหน้าเตือนเต็มจอ + ฟ้าพูด
     if (onReminderReceived != null) {
       onReminderReceived!(body);
       return;
     }
 
-    // Fallback: แสดง notification (ถ้ายังไม่ได้ set callback)
     final plugin = FlutterLocalNotificationsPlugin();
     plugin.show(
-      message.hashCode,
-      title,
-      body,
-      _reminderNotificationDetails,
-      payload: body,
+      message.hashCode, title, body,
+      _reminderNotificationDetails, payload: body,
     );
   }
 

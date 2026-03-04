@@ -63,9 +63,11 @@ def init_firebase():
     logger.warning("[WARN] Firebase Admin NOT initialized — no credentials found. Push notifications disabled.")
 
 
-def send_push_to_user(user_id: str, title: str, body: str) -> int:
+def send_push_to_user(user_id: str, title: str, body: str,
+                      notification_type: str = "reminder") -> int:
     """
     ส่ง push notification ไปยังอุปกรณ์ทั้งหมดของผู้ใช้
+    notification_type: "reminder" หรือ "stock_alert"
     Returns: จำนวนอุปกรณ์ที่ส่งสำเร็จ
     """
     if not _initialized:
@@ -81,10 +83,9 @@ def send_push_to_user(user_id: str, title: str, body: str) -> int:
     for token in tokens:
         try:
             # ใช้ data-only message เพื่อให้ background handler ทำงาน
-            # (notification message จะถูก Android OS intercept → ไม่ trigger handler)
             message = messaging.Message(
                 data={
-                    "type": "reminder",
+                    "type": notification_type,
                     "title": title,
                     "body": body,
                 },

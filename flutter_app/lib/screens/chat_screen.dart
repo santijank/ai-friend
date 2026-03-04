@@ -207,6 +207,20 @@ class _ChatScreenState extends State<ChatScreen> {
         await TtsService.speak(reply);
       }
 
+      // จัดการ stock alert จาก API response
+      final stockSymbol = response['stock_symbol'] as String?;
+      final stockPrice = response['stock_price'];
+      final stockCurrency = response['stock_currency'] as String? ?? '';
+      if (stockSymbol != null && stockPrice != null && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('📊 ติดตามหุ้น $stockSymbol เรียบร้อย! (ราคา $stockPrice $stockCurrency)'),
+            backgroundColor: Colors.blueGrey,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+
       // จัดการ reminder จาก API response
       final hasReminder = response['has_reminder'] == true;
       final reminderTime = response['reminder_time'] as String?;

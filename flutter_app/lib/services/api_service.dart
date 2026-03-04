@@ -308,6 +308,73 @@ class ApiService {
     return {'count': 0, 'alerts': []};
   }
 
+  // ==================== Stock Watchlist ====================
+
+  /// ดึงราคาหุ้นปัจจุบัน
+  static Future<Map<String, dynamic>> getStockPrice(String symbol) async {
+    final response = await http.get(
+      Uri.parse('$_baseUrl/stocks/price/$symbol'),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    }
+    throw Exception('Stock price failed: ${response.statusCode}');
+  }
+
+  /// วิเคราะห์หุ้นเชิงลึก — Technical + Fundamental
+  static Future<Map<String, dynamic>> getStockAnalysis(String symbol) async {
+    final response = await http.get(
+      Uri.parse('$_baseUrl/stocks/analysis/$symbol'),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    }
+    throw Exception('Stock analysis failed: ${response.statusCode}');
+  }
+
+  /// ดึง watchlist ของ user
+  static Future<Map<String, dynamic>> getStockWatchlist(String userId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$_baseUrl/stocks/watchlist/$userId'),
+      );
+      if (response.statusCode == 200) {
+        return jsonDecode(response.body);
+      }
+    } catch (_) {}
+    return {'count': 0, 'watchlist': []};
+  }
+
+  /// เพิ่มหุ้นเข้า watchlist
+  static Future<Map<String, dynamic>> addStockWatch({
+    required String userId,
+    required String symbol,
+    String alertType = 'change_pct',
+    double targetValue = 3.0,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$_baseUrl/stocks/watch'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'user_id': userId,
+        'symbol': symbol,
+        'alert_type': alertType,
+        'target_value': targetValue,
+      }),
+    );
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    }
+    throw Exception('Add stock watch failed: ${response.statusCode}');
+  }
+
+  /// ลบหุ้นออกจาก watchlist
+  static Future<void> deleteStockWatch(int alertId) async {
+    await http.delete(
+      Uri.parse('$_baseUrl/stocks/watch/$alertId'),
+    );
+  }
+
   /// อัพเดทการตั้งค่า
   static Future<void> updateSettings({
     required String userId,

@@ -50,6 +50,22 @@ void main() async {
     );
   };
 
+  // ตั้ง FCM callback: stock alert → แสดง snackbar + พูด
+  FcmService.onStockAlertReceived = (title, body) {
+    final ctx = navigatorKey.currentContext;
+    if (ctx != null) {
+      ScaffoldMessenger.of(ctx).showSnackBar(
+        SnackBar(
+          content: Text('$title\n$body'),
+          backgroundColor: body.contains('ขึ้น') ? Colors.green : Colors.red,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+    }
+    // พูดแจ้งเตือนหุ้น
+    TtsService.speak(body);
+  };
+
   // เริ่ม background alert polling (แจ้งเตือนแม้ปิดแอป)
   await BackgroundAlertService.initialize(AppConfig.apiBaseUrl);
 
