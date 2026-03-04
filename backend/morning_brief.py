@@ -30,8 +30,9 @@ def generate_morning_brief(
     user_name: str,
     reminders: list[dict],
     routines: list[dict],
+    stock_brief: str | None = None,
 ) -> str:
-    """สร้างข้อความสรุปเช้า"""
+    """สร้างข้อความสรุปเช้า — รวมสรุปหุ้นที่ติดตาม"""
     now = datetime.now()
     day_name = DAY_NAMES[now.weekday()]
     date_str = now.strftime("%d/%m/%Y")
@@ -60,6 +61,11 @@ def generate_morning_brief(
         for r in routines:
             time_str = f" ({r['time']})" if r.get("time") else ""
             lines.append(f"  ☐ {r['title']}{time_str}")
+        lines.append("")
+
+    # แสดงสรุปหุ้น
+    if stock_brief:
+        lines.append(f"📊 {stock_brief}")
         lines.append("")
 
     lines.append(encourage)
