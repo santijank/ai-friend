@@ -459,6 +459,212 @@ def get_watchlist_brief(user_id: str) -> str | None:
     return "หุ้นวันนี้: " + " | ".join(parts)
 
 
+# ==================== Cached Versions (อ่านจาก DB ก่อน, fallback ดึงสด) ====================
+
+def get_stock_price_cached(symbol: str) -> dict | None:
+    """ดึงราคาหุ้นจาก cache ก่อน — ถ้าหมดอายุค่อย fetch ใหม่"""
+    cached = db.get_stock_cache(symbol, max_age_minutes=10)
+    if cached and cached.get("price"):
+        return {
+            "symbol": cached["symbol"],
+            "name": cached.get("name", symbol),
+            "price": cached["price"],
+            "previous_close": cached.get("previous_close", 0),
+            "change": round(cached["price"] - (cached.get("previous_close") or 0), 2),
+            "change_pct": cached.get("change_pct", 0),
+            "currency": cached.get("currency", "THB" if symbol.endswith(".BK") else "USD"),
+            "market_state": cached.get("market_state", "CACHED"),
+        }
+    # Cache miss → ดึงสดแต่ limit timeout
+    try:
+        data = get_stock_price(symbol)
+        if data:
+            db.upsert_stock_cache(data)
+        return data
+    except Exception as e:
+        logger.warning(f"get_stock_price_cached fallback failed for {symbol}: {e}")
+        return None
+
+
+def get_stock_analysis_cached(symbol: str) -> dict | None:
+    """ดึง analysis จาก cache ก่อน — ถ้าหมดอายุค่อย fetch ใหม่"""
+    cached = db.get_stock_cache(symbol, max_age_minutes=10)
+    if cached and cached.get("price"):
+        # สร้าง analysis dict จาก cache
+        return {
+            "symbol": cached["symbol"],
+            "name": cached.get("name", symbol),
+            "currency": cached.get("currency", "THB" if symbol.endswith(".BK") else "USD"),
+            "sector": cached.get("sector", ""),
+            "industry": cached.get("industry", ""),
+            "price": cached["price"],
+            "prev_close": cached.get("previous_close", 0),
+            "change_pct": cached.get("change_pct", 0),
+            "market_cap": cached.get("market_cap"),
+            "pe_ratio": cached.get("pe_ratio"),
+            "div_yield": cached.get("div_yield"),
+            "sma_20": cached.get("sma_20"),
+            "sma_50": cached.get("sma_50"),
+            "sma_200": cached.get("sma_200"),
+            "rsi_14": cached.get("rsi_14"),
+            "volume": cached.get("volume"),
+            "avg_volume_20d": cached.get("avg_volume_20d"),
+            "volume_ratio": cached.get("volume_ratio"),
+            "support_30d": cached.get("support_30d"),
+            "resistance_30d": cached.get("resistance_30d"),
+            "high_52w": cached.get("high_52w"),
+            "low_52w": cached.get("low_52w"),
+            "perf_1w": cached.get("perf_1w"),
+            "perf_1m": cached.get("perf_1m"),
+            "perf_3m": cached.get("perf_3m"),
+            "trend": cached.get("trend", "sideways"),
+            "signals": cached.get("signals", []),
+        }
+    # Cache miss → ดึงสด
+    try:
+        data = get_stock_analysis(symbol)
+        if data:
+            db.upsert_stock_cache(data)
+        return data
+    except Exception as e:
+        logger.warning(f"get_stock_analysis_cached fallback failed for {symbol}: {e}")
+        return None
+
+
+def get_market_overview_cached() -> dict | None:
+    """ดึง market overview จาก cache ก่อน"""
+    cached = db.get_market_cache(max_age_minutes=10)
+    if cached:
+        return cached
+    # Cache miss → ดึงสด + cache
+    try:
+        data = get_market_overview()
+        if data:
+            for name, info in data.items():
+                # หา symbol จาก name
+                sym_map = {
+                    "SET Index": "^SET.BK", "S&P 500": "^GSPC",
+                    "Dow Jones": "^DJI", "Gold": "GC=F", "Crude Oil": "CL=F",
+                }
+                sym = sym_map.get(name, "")
+                db.upsert_market_cache(name, sym, info["price"], info["change_pct"])
+        return data
+    except Exception as e:
+        logger.warning(f"get_market_overview_cached fallback failed: {e}")
+        return None
+
+
+def get_watchlist_summary_cached(user_id: str) -> str:
+    """สรุป watchlist จาก cache — ไม่เรียก yfinance"""
+    alerts = db.get_user_stock_alerts(user_id)
+    if not alerts:
+        return ""
+
+    symbols = {}
+    for a in alerts:
+        sym = a["symbol"]
+        if sym not in symbols:
+            symbols[sym] = {"display": a["display_name"], "alerts": []}
+        alert_desc = ""
+        if a["alert_type"] == "price_above":
+            alert_desc = f"เตือนถ้าขึ้นเกิน {a['target_value']}"
+        elif a["alert_type"] == "price_below":
+            alert_desc = f"เตือนถ้าตกต่ำกว่า {a['target_value']}"
+        elif a["alert_type"] == "change_pct":
+            alert_desc = f"เตือนถ้าเปลี่ยน ±{a['target_value']}%"
+        symbols[sym]["alerts"].append(alert_desc)
+
+    lines = [f"📋 หุ้นที่ติดตามอยู่:"]
+    for sym, info in symbols.items():
+        cached = db.get_stock_cache(sym, max_age_minutes=15)
+        if cached and cached.get("price"):
+            emoji = "📈" if (cached.get("change_pct") or 0) >= 0 else "📉"
+            currency = cached.get("currency", "THB")
+            lines.append(
+                f"{emoji} {info['display']}: {cached['price']} {currency} "
+                f"({cached.get('change_pct', 0):+.2f}%) — {', '.join(info['alerts'])}"
+            )
+        else:
+            lines.append(f"• {info['display']}: รอข้อมูล")
+
+    return "\n".join(lines)
+
+
+def get_watchlist_brief_cached(user_id: str) -> str | None:
+    """สรุปสั้น ๆ สำหรับ morning brief — จาก cache"""
+    alerts = db.get_user_stock_alerts(user_id)
+    if not alerts:
+        return None
+
+    symbols = set(a["symbol"] for a in alerts)
+    display_map = {a["symbol"]: a["display_name"] for a in alerts}
+
+    parts = []
+    for sym in symbols:
+        cached = db.get_stock_cache(sym, max_age_minutes=15)
+        if cached and cached.get("price"):
+            display = display_map.get(sym, sym)
+            pct = cached.get("change_pct", 0)
+            emoji = "📈" if pct >= 0 else "📉"
+            parts.append(f"{emoji}{display} {pct:+.1f}%")
+
+    if not parts:
+        return None
+    return "หุ้นวันนี้: " + " | ".join(parts)
+
+
+# ==================== Background Pre-fetch Job ====================
+
+def refresh_stock_cache():
+    """
+    Background job — ดึงข้อมูลหุ้นทั้งหมดใน watchlist + market overview
+    แล้วบันทึกลง cache ทุก 5 นาที (เรียกจาก APScheduler)
+    """
+    logger.info("🔄 Stock cache refresh started...")
+
+    # 1. ดึง symbols ทั้งหมดจาก watchlist
+    alerts = db.get_all_active_stock_alerts()
+    symbols = list(set(a["symbol"] for a in alerts))
+    logger.info(f"  Symbols to cache: {symbols}")
+
+    cached_count = 0
+    for symbol in symbols:
+        try:
+            # ดึง full analysis (รวม price, technical, fundamental)
+            analysis = get_stock_analysis(symbol)
+            if analysis:
+                db.upsert_stock_cache(analysis)
+                cached_count += 1
+                logger.debug(f"  ✅ Cached {symbol}: {analysis.get('price')}")
+            else:
+                # fallback: ดึงแค่ราคา
+                price_data = get_stock_price(symbol)
+                if price_data:
+                    db.upsert_stock_cache(price_data)
+                    cached_count += 1
+                    logger.debug(f"  ✅ Cached {symbol} (price only)")
+        except Exception as e:
+            logger.warning(f"  ❌ Failed to cache {symbol}: {e}")
+
+    # 2. ดึง market overview
+    market_count = 0
+    try:
+        market = get_market_overview()
+        if market:
+            sym_map = {
+                "SET Index": "^SET.BK", "S&P 500": "^GSPC",
+                "Dow Jones": "^DJI", "Gold": "GC=F", "Crude Oil": "CL=F",
+            }
+            for name, info in market.items():
+                sym = sym_map.get(name, "")
+                db.upsert_market_cache(name, sym, info["price"], info["change_pct"])
+                market_count += 1
+    except Exception as e:
+        logger.warning(f"  ❌ Market overview cache failed: {e}")
+
+    logger.info(f"🔄 Stock cache refresh done: {cached_count}/{len(symbols)} stocks, {market_count} indices")
+
+
 def is_stock_related_message(message: str) -> bool:
     """ตรวจว่าข้อความเกี่ยวกับหุ้น/การลงทุนหรือไม่"""
     stock_keywords = [

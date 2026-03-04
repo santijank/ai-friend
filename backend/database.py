@@ -137,6 +137,46 @@ def init_db():
         );
 
         CREATE INDEX IF NOT EXISTS idx_stock_watchlist_user ON stock_watchlist(user_id, active);
+
+        CREATE TABLE IF NOT EXISTS stock_cache (
+            symbol TEXT PRIMARY KEY,
+            name TEXT,
+            price REAL,
+            previous_close REAL,
+            change_pct REAL,
+            currency TEXT,
+            sma_20 REAL,
+            sma_50 REAL,
+            rsi_14 REAL,
+            support_30d REAL,
+            resistance_30d REAL,
+            trend TEXT,
+            pe_ratio REAL,
+            div_yield REAL,
+            sector TEXT,
+            signals_json TEXT,
+            perf_1w REAL,
+            perf_1m REAL,
+            perf_3m REAL,
+            volume_ratio REAL,
+            market_cap REAL,
+            high_52w REAL,
+            low_52w REAL,
+            volume INTEGER,
+            avg_volume_20d INTEGER,
+            industry TEXT,
+            market_state TEXT,
+            sma_200 REAL,
+            fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS market_cache (
+            index_name TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            price REAL,
+            change_pct REAL,
+            fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     """)
     conn.commit()
     conn.close()
@@ -583,3 +623,146 @@ def delete_stock_alert(alert_id: int):
     conn.execute("UPDATE stock_watchlist SET active = 0 WHERE id = ?", (alert_id,))
     conn.commit()
     conn.close()
+
+
+# ==================== Stock Cache (Pre-fetched Data) ====================
+
+def upsert_stock_cache(data: dict):
+    """บันทึก/อัพเดท stock cache — upsert by symbol"""
+    conn = get_db()
+    conn.execute("""
+        INSERT INTO stock_cache (
+            symbol, name, price, previous_close, change_pct, currency,
+            sma_20, sma_50, sma_200, rsi_14,
+            support_30d, resistance_30d, trend,
+            pe_ratio, div_yield, sector, industry,
+            signals_json, perf_1w, perf_1m, perf_3m,
+            volume_ratio, market_cap, high_52w, low_52w,
+            volume, avg_volume_20d, market_state, fetched_at
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?, ?
+        )
+        ON CONFLICT(symbol) DO UPDATE SET
+            name=excluded.name, price=excluded.price,
+            previous_close=excluded.previous_close,
+            change_pct=excluded.change_pct, currency=excluded.currency,
+            sma_20=excluded.sma_20, sma_50=excluded.sma_50,
+            sma_200=excluded.sma_200, rsi_14=excluded.rsi_14,
+            support_30d=excluded.support_30d, resistance_30d=excluded.resistance_30d,
+            trend=excluded.trend, pe_ratio=excluded.pe_ratio,
+            div_yield=excluded.div_yield, sector=excluded.sector,
+            industry=excluded.industry, signals_json=excluded.signals_json,
+            perf_1w=excluded.perf_1w, perf_1m=excluded.perf_1m,
+            perf_3m=excluded.perf_3m, volume_ratio=excluded.volume_ratio,
+            market_cap=excluded.market_cap, high_52w=excluded.high_52w,
+            low_52w=excluded.low_52w, volume=excluded.volume,
+            avg_volume_20d=excluded.avg_volume_20d,
+            market_state=excluded.market_state, fetched_at=excluded.fetched_at
+    """, (
+        data.get("symbol"), data.get("name"), data.get("price"),
+        data.get("previous_close") or data.get("prev_close"),
+        data.get("change_pct"), data.get("currency"),
+        data.get("sma_20"), data.get("sma_50"), data.get("sma_200"),
+        data.get("rsi_14"), data.get("support_30d"), data.get("resistance_30d"),
+        data.get("trend"), data.get("pe_ratio"), data.get("div_yield"),
+        data.get("sector"), data.get("industry"),
+        json.dumps(data.get("signals", []), ensure_ascii=False),
+        data.get("perf_1w"), data.get("perf_1m"), data.get("perf_3m"),
+        data.get("volume_ratio"), data.get("market_cap"),
+        data.get("high_52w"), data.get("low_52w"),
+        data.get("volume"), data.get("avg_volume_20d"),
+        data.get("market_state"),
+        datetime.now(BKK).isoformat(),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_stock_cache(symbol: str, max_age_minutes: int = 10) -> dict | None:
+    """อ่าน stock cache — return None ถ้าหมดอายุหรือไม่มี"""
+    conn = get_db()
+    row = conn.execute(
+        "SELECT * FROM stock_cache WHERE symbol = ?", (symbol,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    data = dict(row)
+    # เช็คอายุ
+    try:
+        fetched = datetime.fromisoformat(data["fetched_at"])
+        if fetched.tzinfo is None:
+            fetched = fetched.replace(tzinfo=BKK)
+        age = (datetime.now(BKK) - fetched).total_seconds()
+        if age > max_age_minutes * 60:
+            return None
+    except Exception:
+        return None
+    # parse signals_json back to list
+    try:
+        data["signals"] = json.loads(data.get("signals_json") or "[]")
+    except Exception:
+        data["signals"] = []
+    return data
+
+
+def get_all_stock_cache() -> list[dict]:
+    """ดึง stock cache ทั้งหมด (ไม่เช็คอายุ — ใช้แสดง watchlist)"""
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM stock_cache").fetchall()
+    conn.close()
+    results = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["signals"] = json.loads(d.get("signals_json") or "[]")
+        except Exception:
+            d["signals"] = []
+        results.append(d)
+    return results
+
+
+def upsert_market_cache(index_name: str, symbol: str, price: float, change_pct: float):
+    """บันทึก/อัพเดท market index cache"""
+    conn = get_db()
+    conn.execute("""
+        INSERT INTO market_cache (index_name, symbol, price, change_pct, fetched_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(index_name) DO UPDATE SET
+            symbol=excluded.symbol, price=excluded.price,
+            change_pct=excluded.change_pct, fetched_at=excluded.fetched_at
+    """, (index_name, symbol, price, change_pct, datetime.now(BKK).isoformat()))
+    conn.commit()
+    conn.close()
+
+
+def get_market_cache(max_age_minutes: int = 10) -> dict | None:
+    """อ่าน market overview จาก cache — return None ถ้าหมดอายุ"""
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM market_cache").fetchall()
+    conn.close()
+    if not rows:
+        return None
+    results = {}
+    for r in rows:
+        d = dict(r)
+        try:
+            fetched = datetime.fromisoformat(d["fetched_at"])
+            if fetched.tzinfo is None:
+                fetched = fetched.replace(tzinfo=BKK)
+            age = (datetime.now(BKK) - fetched).total_seconds()
+            if age > max_age_minutes * 60:
+                continue
+        except Exception:
+            continue
+        results[d["index_name"]] = {
+            "price": d["price"],
+            "change_pct": d["change_pct"],
+        }
+    return results if results else None

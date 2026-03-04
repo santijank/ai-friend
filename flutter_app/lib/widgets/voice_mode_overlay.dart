@@ -153,7 +153,9 @@ class _VoiceModeOverlayState extends State<VoiceModeOverlay>
     debugPrint('JARVIS: sending message...');
 
     try {
-      final reply = await widget.onSendMessage(text);
+      // Timeout 20 วินาที — ป้องกันค้างถ้า backend ช้า
+      final reply = await widget.onSendMessage(text)
+          .timeout(const Duration(seconds: 20));
 
       if (!_isActive || !mounted) return;
       _stopAllAnimations();
@@ -183,6 +185,16 @@ class _VoiceModeOverlayState extends State<VoiceModeOverlay>
         debugPrint('JARVIS: empty reply, back to listening');
         _startListening();
       }
+    } on TimeoutException {
+      debugPrint('JARVIS: API timeout! telling user and retrying...');
+      if (!_isActive || !mounted) return;
+      _stopAllAnimations();
+      setState(() {
+        _state = VoiceModeState.speaking;
+        _lastAiReply = 'ฟ้าตอบช้าไปหน่อย ลองพูดใหม่นะ~';
+      });
+      await TtsService.speak('ฟ้าตอบช้าไปหน่อย ลองพูดใหม่นะ');
+      _continueToListening();
     } catch (e) {
       debugPrint('JARVIS: send error: $e');
       if (!_isActive || !mounted) return;

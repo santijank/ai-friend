@@ -84,6 +84,7 @@ class ApiService {
   }
 
   /// ส่งข้อความแชท (auto-reregister ถ้า user หายจาก DB)
+  /// timeout 15 วินาที — ป้องกันแอปค้างถ้า backend ช้า
   static Future<Map<String, dynamic>> sendMessage({
     required String userId,
     required String message,
@@ -95,7 +96,7 @@ class ApiService {
         'user_id': userId,
         'message': message,
       }),
-    );
+    ).timeout(const Duration(seconds: 15));
 
     // ถ้า 404 = user ไม่เจอ (DB reset เพราะ Render restart)
     // → auto-reregister แล้ว retry ด้วย userId ใหม่
@@ -112,7 +113,7 @@ class ApiService {
             'user_id': newUserId,
             'message': message,
           }),
-        );
+        ).timeout(const Duration(seconds: 15));
       }
     }
 

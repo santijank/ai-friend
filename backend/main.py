@@ -32,6 +32,10 @@ from stock_service import (
     is_stock_related_message, detect_stock_symbols_in_message,
     get_market_overview, format_market_overview_for_ai,
     get_watchlist_summary, get_watchlist_brief,
+    # Cached versions (อ่านจาก DB — ตอบทันที)
+    get_stock_price_cached, get_stock_analysis_cached,
+    get_market_overview_cached, get_watchlist_summary_cached,
+    get_watchlist_brief_cached, refresh_stock_cache,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -75,8 +79,18 @@ async def lifespan(app: FastAPI):
         max_instances=1,
         misfire_grace_time=60,
     )
+    reminder_scheduler.add_job(
+        refresh_stock_cache,
+        trigger="interval",
+        minutes=5,
+        id="stock_cache_refresh",
+        name="Pre-fetch stock data to cache",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=60,
+    )
     reminder_scheduler.start()
-    print("[OK] Alert scheduler started (alerts: 7min, stocks: 5min)")
+    print("[OK] Alert scheduler started (alerts: 7min, stocks: 5min, cache: 5min)")
 
     # ดึงข้อมูลทันทีตอน start
     try:
@@ -84,6 +98,14 @@ async def lifespan(app: FastAPI):
         print("[OK] Initial alert fetch completed")
     except Exception as e:
         print(f"[WARN] Initial alert fetch failed: {e}")
+
+    # Pre-fetch stock cache ตอน start (ทำใน background thread ไม่ block server)
+    import asyncio
+    try:
+        asyncio.get_event_loop().run_in_executor(None, refresh_stock_cache)
+        print("[OK] Stock cache refresh started in background")
+    except Exception as e:
+        print(f"[WARN] Initial stock cache failed: {e}")
 
     yield
 
@@ -334,33 +356,36 @@ async def chat(req: ChatRequest):
         # ========== ชั้น 2: Claude Haiku + Full Context ==========
         recent_messages = db.get_recent_messages(req.user_id, limit=6)
 
-        # Smart Stock Injection: ตรวจจับข้อความเกี่ยวกับหุ้น → ดึงข้อมูลวิเคราะห์ให้ AI
+        # Smart Stock Injection: ดึงจาก CACHE (ตอบทันที ไม่ต้องรอ yfinance)
         stock_context = None
         if is_stock_related_message(req.message):
-            context_parts = []
+            try:
+                context_parts = []
 
-            # 1. ข้อมูลวิเคราะห์หุ้นที่ถาม (ถ้ามีชื่อหุ้นเจาะจง)
-            symbols = detect_stock_symbols_in_message(req.message)
-            if symbols:
-                for sym in symbols[:2]:
-                    yahoo_sym, _ = format_symbol(sym)
-                    analysis = get_stock_analysis(yahoo_sym)
-                    if analysis:
-                        context_parts.append(format_analysis_for_ai(analysis))
+                # 1. ข้อมูลวิเคราะห์หุ้นที่ถาม (จาก cache)
+                symbols = detect_stock_symbols_in_message(req.message)
+                if symbols:
+                    for sym in symbols[:2]:
+                        yahoo_sym, _ = format_symbol(sym)
+                        analysis = get_stock_analysis_cached(yahoo_sym)
+                        if analysis:
+                            context_parts.append(format_analysis_for_ai(analysis))
 
-            # 2. ภาพรวมตลาด
-            market = get_market_overview()
-            if market:
-                context_parts.append(format_market_overview_for_ai(market))
+                # 2. ภาพรวมตลาด (จาก cache)
+                market = get_market_overview_cached()
+                if market:
+                    context_parts.append(format_market_overview_for_ai(market))
 
-            # 3. Watchlist ของผู้ใช้ (ให้ AI รู้ว่าติดตามหุ้นอะไรอยู่)
-            watchlist = get_watchlist_summary(req.user_id)
-            if watchlist:
-                context_parts.append(watchlist)
+                # 3. Watchlist ของผู้ใช้ (จาก cache)
+                watchlist = get_watchlist_summary_cached(req.user_id)
+                if watchlist:
+                    context_parts.append(watchlist)
 
-            if context_parts:
-                stock_context = "\n\n".join(context_parts)
-                logger.info(f"📊 Injected full stock context: symbols={symbols}, market=True, watchlist={'Yes' if watchlist else 'No'}")
+                if context_parts:
+                    stock_context = "\n\n".join(context_parts)
+                    logger.info(f"📊 Stock context from CACHE: symbols={symbols}, market={'Yes' if market else 'No'}")
+            except Exception as e:
+                logger.warning(f"Stock context injection failed (skipping): {e}")
 
         ai_result = await call_haiku(
             message=req.message,
@@ -528,18 +553,18 @@ async def register_device_token(req: DeviceTokenRequest):
 
 @app.get("/stocks/market")
 async def market_overview():
-    """ภาพรวมตลาด — SET Index, S&P 500, Gold, Oil"""
-    data = get_market_overview()
+    """ภาพรวมตลาด — SET Index, S&P 500, Gold, Oil (จาก cache)"""
+    data = get_market_overview_cached()
     if not data:
-        raise HTTPException(status_code=503, detail="ไม่สามารถดึงข้อมูลตลาดได้")
+        raise HTTPException(status_code=503, detail="ไม่สามารถดึงข้อมูลตลาดได้ (รอ cache อัพเดท)")
     return data
 
 
 @app.get("/stocks/price/{symbol}")
 async def stock_price(symbol: str):
-    """ดึงราคาหุ้นปัจจุบัน"""
+    """ดึงราคาหุ้นปัจจุบัน (จาก cache)"""
     yahoo_sym, display_name = format_symbol(symbol)
-    data = get_stock_price(yahoo_sym)
+    data = get_stock_price_cached(yahoo_sym)
     if not data:
         raise HTTPException(status_code=404, detail=f"ไม่พบข้อมูลหุ้น {symbol}")
     return data
@@ -547,9 +572,9 @@ async def stock_price(symbol: str):
 
 @app.get("/stocks/analysis/{symbol}")
 async def stock_analysis(symbol: str):
-    """วิเคราะห์หุ้นเชิงลึก — Technical + Fundamental"""
+    """วิเคราะห์หุ้นเชิงลึก — Technical + Fundamental (จาก cache)"""
     yahoo_sym, display_name = format_symbol(symbol)
-    data = get_stock_analysis(yahoo_sym)
+    data = get_stock_analysis_cached(yahoo_sym)
     if not data:
         raise HTTPException(status_code=404, detail=f"ไม่พบข้อมูลหุ้น {symbol}")
     return data
@@ -792,7 +817,7 @@ async def morning_brief(user_id: str):
 
     reminders = db.get_pending_reminders(user_id)
     routines = db.get_routines(user_id)
-    stock_brief = get_watchlist_brief(user_id)
+    stock_brief = get_watchlist_brief_cached(user_id)
     brief = generate_morning_brief(user["name"], reminders, routines, stock_brief)
     return {"message": brief}
 
