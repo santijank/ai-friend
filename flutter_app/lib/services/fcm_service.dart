@@ -7,11 +7,55 @@ import 'package:http/http.dart' as http;
 import '../config.dart';
 import 'local_storage.dart';
 
+/// Notification details สำหรับ reminder — fullScreenIntent เปิดจอ + แสดงทับจอล็อค
+const _reminderNotificationDetails = NotificationDetails(
+  android: AndroidNotificationDetails(
+    'reminders_v2',
+    'Reminders',
+    channelDescription: 'การแจ้งเตือนจากฟ้า',
+    importance: Importance.max,
+    priority: Priority.max,
+    playSound: true,
+    enableVibration: true,
+    fullScreenIntent: true,
+    category: AndroidNotificationCategory.alarm,
+    visibility: NotificationVisibility.public,
+  ),
+  iOS: DarwinNotificationDetails(
+    presentAlert: true,
+    presentSound: true,
+  ),
+);
+
 /// Background message handler — ต้องเป็น top-level function
+/// ทำงานใน isolate แยก เมื่อ FCM data message มาถึงขณะแอปปิด/จอดับ
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  debugPrint('FCM background message: ${message.notification?.title}');
-  // Android จะแสดง notification อัตโนมัติจาก notification payload
+  final data = message.data;
+  debugPrint('FCM background: type=${data['type']}, body=${data['body']}');
+
+  if (data['type'] == 'reminder') {
+    final title = data['title'] ?? '🤖 ฟ้าเตือน~';
+    final body = data['body'] ?? '';
+
+    // Init plugin ใน isolate (ต้อง init ใหม่เพราะอยู่คนละ isolate กับ main)
+    final plugin = FlutterLocalNotificationsPlugin();
+    await plugin.initialize(
+      const InitializationSettings(
+        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      ),
+    );
+
+    // สร้าง local notification + fullScreenIntent → ปลุกจอ + เปิดแอป
+    await plugin.show(
+      DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      title,
+      body,
+      _reminderNotificationDetails,
+      payload: body,
+    );
+    debugPrint('✅ Background: created local notification with fullScreenIntent');
+  }
 }
 
 class FcmService {
@@ -56,7 +100,6 @@ class FcmService {
     // เช็คว่าเปิด app จาก notification หรือเปล่า (terminated state)
     final initialMessage = await _messaging.getInitialMessage();
     if (initialMessage != null) {
-      // Delay เล็กน้อยเพื่อให้ navigator พร้อม
       Future.delayed(const Duration(seconds: 1), () {
         _handleMessageOpenedApp(initialMessage);
       });
@@ -86,45 +129,34 @@ class FcmService {
 
   /// Foreground: แอปเปิดอยู่ → เปิดหน้าเตือนเต็มจอ + ฟ้าพูดทันที
   static void _handleForegroundMessage(RemoteMessage message) {
-    final notification = message.notification;
-    if (notification == null) return;
+    // อ่านจาก data (backend ส่ง data-only message)
+    final data = message.data;
+    final body = data['body'] ?? message.notification?.body ?? '';
+    final title = data['title'] ?? message.notification?.title ?? '';
 
-    final body = notification.body ?? '';
-    debugPrint('FCM foreground: ${notification.title} — $body');
+    if (body.isEmpty) return;
+    debugPrint('FCM foreground: $title — $body');
 
     // ถ้ามี callback → เปิดหน้าเตือนเต็มจอ + ฟ้าพูด (ไม่ต้องกด notification)
-    if (onReminderReceived != null && body.isNotEmpty) {
+    if (onReminderReceived != null) {
       onReminderReceived!(body);
       return;
     }
 
-    // Fallback: แสดง notification ธรรมดา (ถ้ายังไม่ได้ set callback)
+    // Fallback: แสดง notification (ถ้ายังไม่ได้ set callback)
     final plugin = FlutterLocalNotificationsPlugin();
     plugin.show(
       message.hashCode,
-      notification.title ?? '',
+      title,
       body,
-      const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'reminders_v2',
-          'Reminders',
-          channelDescription: 'การแจ้งเตือนจากฟ้า',
-          importance: Importance.max,
-          priority: Priority.max,
-          playSound: true,
-          enableVibration: true,
-          fullScreenIntent: true,
-          category: AndroidNotificationCategory.alarm,
-          visibility: NotificationVisibility.public,
-        ),
-      ),
+      _reminderNotificationDetails,
       payload: body,
     );
   }
 
   /// User กด notification จาก background → เปิดหน้าเตือน + ฟ้าพูด
   static void _handleMessageOpenedApp(RemoteMessage message) {
-    final body = message.notification?.body ?? '';
+    final body = message.data['body'] ?? message.notification?.body ?? '';
     debugPrint('FCM opened app: $body');
 
     if (onReminderReceived != null && body.isNotEmpty) {

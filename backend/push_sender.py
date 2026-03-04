@@ -80,19 +80,15 @@ def send_push_to_user(user_id: str, title: str, body: str) -> int:
     success_count = 0
     for token in tokens:
         try:
+            # ใช้ data-only message เพื่อให้ background handler ทำงาน
+            # (notification message จะถูก Android OS intercept → ไม่ trigger handler)
             message = messaging.Message(
-                notification=messaging.Notification(
-                    title=title,
-                    body=body,
-                ),
-                android=messaging.AndroidConfig(
-                    priority="high",
-                    notification=messaging.AndroidNotification(
-                        channel_id="reminders_v2",
-                        priority="max",
-                        sound="default",
-                    ),
-                ),
+                data={
+                    "type": "reminder",
+                    "title": title,
+                    "body": body,
+                },
+                android=messaging.AndroidConfig(priority="high"),
                 token=token,
             )
             messaging.send(message)
