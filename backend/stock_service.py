@@ -702,8 +702,7 @@ def get_stock_price_cached(symbol: str) -> dict | None:
     # Cache miss → ดึงสดแต่ limit timeout
     try:
         data = get_stock_price(symbol)
-        if data:
-            db.upsert_stock_cache(data)
+        # ไม่ upsert price-only data ลง stock_cache — จะไป overwrite analysis data ที่มีอยู่
         return data
     except Exception as e:
         logger.warning(f"get_stock_price_cached fallback failed for {symbol}: {e}")
@@ -713,7 +712,11 @@ def get_stock_price_cached(symbol: str) -> dict | None:
 def get_stock_analysis_cached(symbol: str) -> dict | None:
     """ดึง analysis จาก cache ก่อน — ถ้าหมดอายุค่อย fetch ใหม่"""
     cached = db.get_stock_cache(symbol, max_age_minutes=10)
-    if cached and cached.get("price"):
+    # ต้องมี technical data (sma_20 หรือ rsi_14) ไม่ใช่แค่ price-only
+    has_analysis = cached and cached.get("price") and (
+        cached.get("sma_20") is not None or cached.get("rsi_14") is not None
+    )
+    if has_analysis:
         # สร้าง analysis dict จาก cache
         return {
             "symbol": cached["symbol"],
