@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 BKK = ZoneInfo("Asia/Bangkok")  # UTC+7
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-MODEL = "claude-haiku-4-5-20251001"
+MODEL = "claude-sonnet-4-20250514"
 API_URL = "https://api.anthropic.com/v1/messages"
 
 # Log API key status on import (masked)
@@ -421,7 +421,7 @@ async def call_haiku(
             },
             json={
                 "model": MODEL,
-                "max_tokens": 800,  # เพิ่มจาก 500 -> รองรับวิเคราะห์หุ้นละเอียด
+                "max_tokens": 1024,  # Sonnet 4: ตอบละเอียดขึ้น + วิเคราะห์หุ้นเชิงลึก
                 "system": system_prompt,
                 "messages": messages,
             },
